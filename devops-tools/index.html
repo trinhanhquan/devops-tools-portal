@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DevOps Service Portal</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+</head>
+<body>
+  <header><h1><i class="fas fa-tools"></i> DevOps Service Portal</h1></header>
+  <nav>
+    <button onclick="toggleApp('jira')"><i class="fab fa-atlassian"></i> Jira</button>
+    <button onclick="toggleApp('jenkins')"><i class="fas fa-cogs"></i> Jenkins</button>
+    <button onclick="toggleApp('bitbucket')"><i class="fab fa-bitbucket"></i> Bitbucket</button>
+    <button onclick="toggleApp('confluence')"><i class="fas fa-book"></i> Confluence</button>
+    <button onclick="toggleApp('artifactory')"><i class="fas fa-archive"></i> Artifactory</button>
+    <button onclick="toggleApp('sonarqube')"><i class="fas fa-bug"></i> SonarQube</button>
+    <button onclick="toggleApp('tools')"><i class="fas fa-toolbox"></i> Other Tools</button>
+  </nav>
+
+  <main id="content">
+    <p>Welcome! Click a tool above to view available environments.</p>
+    <div id="instances"></div>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
