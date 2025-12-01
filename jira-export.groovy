@@ -2,14 +2,12 @@ import com.atlassian.jira.component.ComponentAccessor
 import com.atlassian.jira.project.ProjectManager
 import com.atlassian.jira.workflow.WorkflowManager
 import com.atlassian.jira.workflow.WorkflowSchemeManager
-import com.atlassian.jira.issue.issuetype.IssueTypeSchemeManager
 import com.atlassian.jira.issue.fields.layout.field.FieldLayoutManager
 import com.atlassian.jira.issue.fields.layout.field.FieldLayout
 import com.atlassian.jira.issue.fields.layout.field.FieldLayoutScheme
 import com.atlassian.jira.issue.fields.layout.field.FieldLayoutSchemeEntity
 import com.atlassian.jira.issue.fields.layout.field.FieldLayoutItem
 import com.atlassian.jira.issue.fields.screen.FieldScreenManager
-import com.atlassian.jira.issue.fields.screen.IssueTypeScreenSchemeManager
 import com.atlassian.jira.issue.fields.screen.FieldScreen
 import com.atlassian.jira.issue.fields.screen.FieldScreenTab
 import com.atlassian.jira.issue.fields.screen.FieldScreenLayoutItem
@@ -21,13 +19,13 @@ import groovy.json.JsonOutput
 def projectKey = "YOUR_PROJECT_KEY"   // <-- ĐỔI THÀNH PROJECT CỦA BẠN
 // ================================
 
-def projectManager               = ComponentAccessor.getProjectManager()       as ProjectManager
-def workflowManager              = ComponentAccessor.getWorkflowManager()      as WorkflowManager
-def workflowSchemeManager        = ComponentAccessor.getWorkflowSchemeManager() as WorkflowSchemeManager
-def issueTypeSchemeManager       = ComponentAccessor.getIssueTypeSchemeManager() as IssueTypeSchemeManager
-def fieldLayoutManager           = ComponentAccessor.getFieldLayoutManager()   as FieldLayoutManager
-def fieldScreenManager           = ComponentAccessor.getFieldScreenManager()   as FieldScreenManager
-def issueTypeScreenSchemeManager = ComponentAccessor.getIssueTypeScreenSchemeManager() as IssueTypeScreenSchemeManager
+def projectManager               = ComponentAccessor.getProjectManager()       
+def workflowManager              = ComponentAccessor.getWorkflowManager()      
+def workflowSchemeManager        = ComponentAccessor.getWorkflowSchemeManager()
+def issueTypeSchemeManager       = ComponentAccessor.getIssueTypeSchemeManager()
+def fieldLayoutManager           = ComponentAccessor.getFieldLayoutManager()
+def fieldScreenManager           = ComponentAccessor.getFieldScreenManager()
+def issueTypeScreenSchemeManager = ComponentAccessor.getIssueTypeScreenSchemeManager()
 def fieldManager                 = ComponentAccessor.getFieldManager()
 
 def project = projectManager.getProjectByCurrentKey(projectKey)
@@ -330,4 +328,3 @@ result.screensAndSchemes = screenData
 // --------------------------------------
 def json = JsonOutput.prettyPrint(JsonOutput.toJson(result))
 return json
-
