@@ -14,16 +14,20 @@ IGNORE_ATTRS = {
     "version"
 }
 
+# Bật / tắt việc ignore thay đổi UUID
+IGNORE_UUID_CHANGES = True
+
+# UUID dạng chuẩn: 8-4-4-4-12 hex, hoặc 32 hex liền
 UUID_REGEX = re.compile(
-    r"^[0-9a-fA-F]{8}-"
+    r"^([0-9a-fA-F]{8}-"
     r"[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{12}$"
+    r"[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$"
 )
 
 def is_uuid(value: str) -> bool:
-    """Kiểm tra xem một string có phải UUID dạng chuẩn hay không."""
+    """Kiểm tra xem một string có phải UUID dạng phổ biến hay không."""
     if value is None:
         return False
     value = value.strip()
@@ -75,8 +79,8 @@ def diff_elements(e1, e2, path, changes):
         v1 = attrs1[a]
         v2 = attrs2[a]
         if v1 != v2:
-            # ⚠️ Nếu cả old & new đều là UUID thì bỏ qua
-            if is_uuid(v1) and is_uuid(v2):
+            # ⚠️ Nếu bật IGNORE_UUID_CHANGES và cả old & new đều là UUID thì bỏ qua
+            if IGNORE_UUID_CHANGES and is_uuid(v1) and is_uuid(v2):
                 continue
             changes.append(("CHANGED_ATTR", f"{path}/@{a}", v1, v2))
 
@@ -85,8 +89,7 @@ def diff_elements(e1, e2, path, changes):
     t2 = (e2.text or "")
     if t1 != t2:
         if t1.strip() or t2.strip():
-            # ⚠️ Nếu text trước & sau đều là UUID thì bỏ qua
-            if is_uuid(t1) and is_uuid(t2):
+            if IGNORE_UUID_CHANGES and is_uuid(t1) and is_uuid(t2):
                 pass
             else:
                 changes.append(("CHANGED_TEXT", f"{path}/text()", t1, t2))
@@ -122,6 +125,9 @@ def compare_xml(before_file, after_file):
     root1 = etree.parse(before_file, parser).getroot()
     root2 = etree.parse(after_file, parser).getroot()
 
+    print(f"Root before : /{root1.tag}")
+    print(f"Root after  : /{root2.tag}")
+
     clean_element(root1)
     clean_element(root2)
 
@@ -136,12 +142,21 @@ def save_report(changes, output_file):
 
     with open(output_file, "w", encoding="utf-8") as f:
 
+        header = f"Found {len(changes)} changes"
+        if IGNORE_UUID_CHANGES:
+            header += " (UUID-only changes were ignored)."
+        else:
+            header += "."
+
         if is_html:
-            f.write("<html><body><h2>XML Difference Report</h2>"
-                    "<pre style='font-size:14px'>")
+            f.write("<html><body><h2>XML Difference Report</h2>")
+            f.write(f"<p>{html.escape(header)}</p>")
+            f.write("<pre style='font-size:14px'>")
+        else:
+            f.write(header + "\n\n")
 
         if not changes:
-            msg = "No differences found (UUID-only changes were ignored)."
+            msg = "No differences after applying filters."
             f.write(html.escape(msg) if is_html else msg)
         else:
             for change_type, xpath, old, new in changes:
@@ -167,16 +182,19 @@ def save_report(changes, output_file):
             f.write("</pre></body></html>")
 
     print(f"✅ Report written to: {output_file}")
+    print(f"   Total changes: {len(changes)}")
 
 
 def main():
     if len(sys.argv) != 4:
-        print("Usage: python compare_jira_xml_xpath.py before.xml after.xml report.txt/html")
+        print("Usage: python compare_jira_xml_xpath.py before.xml after.xml report.txt|report.html")
         sys.exit(1)
 
     before_file = sys.argv[1]
     after_file = sys.argv[2]
     report_file = sys.argv[3]
+
+    print(f"🔄 Comparing:\n  BEFORE: {before_file}\n  AFTER : {after_file}\n")
 
     changes = compare_xml(before_file, after_file)
     save_report(changes, report_file)
