@@ -14,24 +14,24 @@ IGNORE_ATTRS = {
     "version"
 }
 
-# Bật / tắt việc ignore thay đổi UUID
+# Bật / tắt việc ignore thay đổi liên quan UUID
 IGNORE_UUID_CHANGES = True
 
-# UUID dạng chuẩn: 8-4-4-4-12 hex, hoặc 32 hex liền
-UUID_REGEX = re.compile(
-    r"^([0-9a-fA-F]{8}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$"
+# UUID / GUID dạng phổ biến:
+# - 8-4-4-4-12 hex
+# - hoặc nhóm hex dài với dấu '-' giữa (như ví dụ bạn đưa)
+UUID_LIKE_REGEX = re.compile(
+    r"[0-9a-fA-F]{8,}-[0-9a-fA-F]{4,}-[0-9a-fA-F]{4,}-[0-9a-fA-F]{4,}"
 )
 
-def is_uuid(value: str) -> bool:
-    """Kiểm tra xem một string có phải UUID dạng phổ biến hay không."""
+def normalize_uuid_like(value: str) -> str:
+    """
+    Thay mọi chuỗi giống UUID / GUID trong string bằng <UUID>.
+    Dùng cho cả attr value và text.
+    """
     if value is None:
-        return False
-    value = value.strip()
-    return bool(UUID_REGEX.match(value))
+        return ""
+    return UUID_LIKE_REGEX.sub("<UUID>", value.strip())
 
 
 def clean_element(elem):
@@ -65,7 +65,7 @@ def diff_elements(e1, e2, path, changes):
         changes.append(("REPLACED_NODE", path, e1.tag, e2.tag))
         return
 
-    # Compare attributes
+    # Compare attributes (sau này sẽ so bằng bản đã normalize UUID)
     attrs1 = dict(e1.attrib)
     attrs2 = dict(e2.attrib)
 
@@ -78,21 +78,32 @@ def diff_elements(e1, e2, path, changes):
     for a in attrs1.keys() & attrs2.keys():
         v1 = attrs1[a]
         v2 = attrs2[a]
-        if v1 != v2:
-            # ⚠️ Nếu bật IGNORE_UUID_CHANGES và cả old & new đều là UUID thì bỏ qua
-            if IGNORE_UUID_CHANGES and is_uuid(v1) and is_uuid(v2):
+
+        if IGNORE_UUID_CHANGES:
+            n1 = normalize_uuid_like(v1)
+            n2 = normalize_uuid_like(v2)
+            if n1 == n2:
+                # Chỉ khác phần UUID → bỏ qua
                 continue
+        if v1 != v2:
             changes.append(("CHANGED_ATTR", f"{path}/@{a}", v1, v2))
 
-    # Compare text
+    # Compare text (cũng dùng normalize UUID)
     t1 = (e1.text or "")
     t2 = (e2.text or "")
-    if t1 != t2:
-        if t1.strip() or t2.strip():
-            if IGNORE_UUID_CHANGES and is_uuid(t1) and is_uuid(t2):
-                pass
-            else:
+
+    if IGNORE_UUID_CHANGES:
+        n1 = normalize_uuid_like(t1)
+        n2 = normalize_uuid_like(t2)
+        if n1 == n2:
+            # Chỉ khác UUID embedded → bỏ qua
+            pass
+        else:
+            if t1.strip() or t2.strip():
                 changes.append(("CHANGED_TEXT", f"{path}/text()", t1, t2))
+    else:
+        if t1 != t2 and (t1.strip() or t2.strip()):
+            changes.append(("CHANGED_TEXT", f"{path}/text()", t1, t2))
 
     # Compare children
     children1 = list(e1)
@@ -144,7 +155,7 @@ def save_report(changes, output_file):
 
         header = f"Found {len(changes)} changes"
         if IGNORE_UUID_CHANGES:
-            header += " (UUID-only changes were ignored)."
+            header += " (changes that differ only by UUID-like values were ignored)."
         else:
             header += "."
 
