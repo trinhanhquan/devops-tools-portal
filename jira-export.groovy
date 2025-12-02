@@ -3,39 +3,23 @@ from lxml import etree
 import html
 import re
 
-# Các thuộc tính Jira muốn bỏ qua để không gây noise
 IGNORE_ATTRS = {
-    "id",
-    "sequence",
-    "timestamp",
-    "lastModified",
-    "updated",
-    "created",
-    "version"
+    "id", "sequence", "timestamp", "lastModified",
+    "updated", "created", "version"
 }
 
-# Bật / tắt việc ignore thay đổi liên quan UUID
 IGNORE_UUID_CHANGES = True
 
-# UUID / GUID dạng phổ biến:
-# - 8-4-4-4-12 hex
-# - hoặc nhóm hex dài với dấu '-' giữa (như ví dụ bạn đưa)
 UUID_LIKE_REGEX = re.compile(
     r"[0-9a-fA-F]{8,}-[0-9a-fA-F]{4,}-[0-9a-fA-F]{4,}-[0-9a-fA-F]{4,}"
 )
 
 def normalize_uuid_like(value: str) -> str:
-    """
-    Thay mọi chuỗi giống UUID / GUID trong string bằng <UUID>.
-    Dùng cho cả attr value và text.
-    """
     if value is None:
         return ""
     return UUID_LIKE_REGEX.sub("<UUID>", value.strip())
 
-
 def clean_element(elem):
-    """Xoá thuộc tính không cần và normalize text."""
     for attr in list(elem.attrib.keys()):
         if attr in IGNORE_ATTRS:
             del elem.attrib[attr]
@@ -50,8 +34,55 @@ def clean_element(elem):
         clean_element(child)
 
 
+def highlight_diff(old, new):
+    """Highlight exactly the modified substring."""
+    if old is None:
+        return "", ""
+
+    o = old or ""
+    n = new or ""
+
+    # Escape HTML characters
+    o_html = html.escape(o)
+    n_html = html.escape(n)
+
+    # Find first difference
+    start = 0
+    while start < min(len(o), len(n)) and o[start] == n[start]:
+        start += 1
+
+    # If strings identical → no change
+    if o == n:
+        return o_html, n_html
+
+    # Find last difference
+    end_o = len(o) - 1
+    end_n = len(n) - 1
+    while end_o >= 0 and end_n >= 0 and o[end_o] == n[end_n]:
+        end_o -= 1
+        end_n -= 1
+
+    # Wrap changed substring with highlight span
+    o_changed = (
+        html.escape(o[:start])
+        + f"<span style='background:yellow;color:red;font-weight:bold'>"
+        + html.escape(o[start:end_o + 1])
+        + "</span>"
+        + html.escape(o[end_o + 1:])
+    )
+
+    n_changed = (
+        html.escape(n[:start])
+        + f"<span style='background:yellow;color:red;font-weight:bold'>"
+        + html.escape(n[start:end_n + 1])
+        + "</span>"
+        + html.escape(n[end_n + 1:])
+    )
+
+    return o_changed, n_changed
+
+
 def build_child_path(parent_path, child, position):
-    """Tạo XPath đẹp và ngắn gọn."""
     if "key" in child.attrib:
         return f"{parent_path}/{child.tag}[@key='{child.attrib['key']}']"
     if "name" in child.attrib:
@@ -60,12 +91,10 @@ def build_child_path(parent_path, child, position):
 
 
 def diff_elements(e1, e2, path, changes):
-    """So sánh toàn bộ node."""
     if e1.tag != e2.tag:
         changes.append(("REPLACED_NODE", path, e1.tag, e2.tag))
         return
 
-    # Compare attributes (sau này sẽ so bằng bản đã normalize UUID)
     attrs1 = dict(e1.attrib)
     attrs2 = dict(e2.attrib)
 
@@ -80,23 +109,18 @@ def diff_elements(e1, e2, path, changes):
         v2 = attrs2[a]
 
         if IGNORE_UUID_CHANGES:
-            n1 = normalize_uuid_like(v1)
-            n2 = normalize_uuid_like(v2)
-            if n1 == n2:
-                # Chỉ khác phần UUID → bỏ qua
+            if normalize_uuid_like(v1) == normalize_uuid_like(v2):
                 continue
+
         if v1 != v2:
             changes.append(("CHANGED_ATTR", f"{path}/@{a}", v1, v2))
 
-    # Compare text (cũng dùng normalize UUID)
+    # TEXT COMPARE
     t1 = (e1.text or "")
     t2 = (e2.text or "")
 
     if IGNORE_UUID_CHANGES:
-        n1 = normalize_uuid_like(t1)
-        n2 = normalize_uuid_like(t2)
-        if n1 == n2:
-            # Chỉ khác UUID embedded → bỏ qua
+        if normalize_uuid_like(t1) == normalize_uuid_like(t2):
             pass
         else:
             if t1.strip() or t2.strip():
@@ -105,110 +129,78 @@ def diff_elements(e1, e2, path, changes):
         if t1 != t2 and (t1.strip() or t2.strip()):
             changes.append(("CHANGED_TEXT", f"{path}/text()", t1, t2))
 
-    # Compare children
-    children1 = list(e1)
-    children2 = list(e2)
-    max_len = max(len(children1), len(children2))
+    # CHILDREN COMPARE
+    c1 = list(e1)
+    c2 = list(e2)
+    max_len = max(len(c1), len(c2))
 
     for i in range(max_len):
         pos = i + 1
-        if i >= len(children1):
-            c2 = children2[i]
-            child_path = build_child_path(path, c2, pos)
-            changes.append(
-                ("ADDED_NODE", child_path, "", etree.tostring(c2, encoding="unicode"))
-            )
-        elif i >= len(children2):
-            c1 = children1[i]
-            child_path = build_child_path(path, c1, pos)
-            changes.append(
-                ("REMOVED_NODE", child_path, etree.tostring(c1, encoding="unicode"), "")
-            )
+        if i >= len(c1):
+            c = c2[i]
+            changes.append(("ADDED_NODE", build_child_path(path, c, pos), "", etree.tostring(c, encoding="unicode")))
+        elif i >= len(c2):
+            c = c1[i]
+            changes.append(("REMOVED_NODE", build_child_path(path, c, pos), etree.tostring(c, encoding="unicode"), ""))
         else:
-            c1 = children1[i]
-            c2 = children2[i]
-            child_path = build_child_path(path, c1, pos)
-            diff_elements(c1, c2, child_path, changes)
+            diff_elements(c1[i], c2[i], build_child_path(path, c1[i], pos), changes)
 
 
 def compare_xml(before_file, after_file):
     parser = etree.XMLParser(remove_blank_text=True)
-    root1 = etree.parse(before_file, parser).getroot()
-    root2 = etree.parse(after_file, parser).getroot()
+    r1 = etree.parse(before_file, parser).getroot()
+    r2 = etree.parse(after_file, parser).getroot()
 
-    print(f"Root before : /{root1.tag}")
-    print(f"Root after  : /{root2.tag}")
-
-    clean_element(root1)
-    clean_element(root2)
+    clean_element(r1)
+    clean_element(r2)
 
     changes = []
-    diff_elements(root1, root2, f"/{root1.tag}", changes)
+    diff_elements(r1, r2, f"/{r1.tag}", changes)
     return changes
 
 
 def save_report(changes, output_file):
-    """Xuất report ra file (txt hoặc html)."""
-    is_html = output_file.lower().endswith(".html")
+    is_html = output_file.endswith(".html")
 
     with open(output_file, "w", encoding="utf-8") as f:
 
-        header = f"Found {len(changes)} changes"
-        if IGNORE_UUID_CHANGES:
-            header += " (changes that differ only by UUID-like values were ignored)."
-        else:
-            header += "."
-
         if is_html:
-            f.write("<html><body><h2>XML Difference Report</h2>")
-            f.write(f"<p>{html.escape(header)}</p>")
-            f.write("<pre style='font-size:14px'>")
-        else:
-            f.write(header + "\n\n")
+            f.write("<html><body><h2>XML Difference Report</h2><pre>")
 
-        if not changes:
-            msg = "No differences after applying filters."
-            f.write(html.escape(msg) if is_html else msg)
-        else:
-            for change_type, xpath, old, new in changes:
-                if is_html:
-                    f.write(f"<b>{change_type}</b>: "
-                            f"<span style='color:blue'>{html.escape(xpath)}</span>\n")
-                    if old:
-                        f.write(f"<span style='color:red'>  - old:</span> "
-                                f"{html.escape(old)}\n")
-                    if new:
-                        f.write(f"<span style='color:green'>  - new:</span> "
-                                f"{html.escape(new)}\n")
-                    f.write("\n")
-                else:
-                    f.write(f"{change_type}: {xpath}\n")
-                    if old:
-                        f.write(f"  - old: {old}\n")
-                    if new:
-                        f.write(f"  - new: {new}\n")
-                    f.write("\n")
+        for change_type, xpath, old, new in changes:
+
+            if change_type in ("CHANGED_ATTR", "CHANGED_TEXT"):
+                old_h, new_h = highlight_diff(old, new)
+            else:
+                old_h, new_h = html.escape(str(old)), html.escape(str(new))
+
+            if is_html:
+                f.write(f"<b>{change_type}</b>: <span style='color:blue'>{html.escape(xpath)}</span>\n")
+                if old:
+                    f.write(f"  - old: {old_h}\n")
+                if new:
+                    f.write(f"  - new: {new_h}\n")
+                f.write("\n")
+            else:
+                f.write(f"{change_type}: {xpath}\n")
+                if old: f.write(f"  - old: {old}\n")
+                if new: f.write(f"  - new: {new}\n")
+                f.write("\n")
 
         if is_html:
             f.write("</pre></body></html>")
 
-    print(f"✅ Report written to: {output_file}")
-    print(f"   Total changes: {len(changes)}")
+    print(f"✔ Report saved → {output_file}")
 
 
 def main():
     if len(sys.argv) != 4:
-        print("Usage: python compare_jira_xml_xpath.py before.xml after.xml report.txt|report.html")
-        sys.exit(1)
+        print("Usage: python compare.py before.xml after.xml report.html")
+        return
 
-    before_file = sys.argv[1]
-    after_file = sys.argv[2]
-    report_file = sys.argv[3]
-
-    print(f"🔄 Comparing:\n  BEFORE: {before_file}\n  AFTER : {after_file}\n")
-
-    changes = compare_xml(before_file, after_file)
-    save_report(changes, report_file)
+    before, after, out = sys.argv[1:]
+    changes = compare_xml(before, after)
+    save_report(changes, out)
 
 
 if __name__ == "__main__":
