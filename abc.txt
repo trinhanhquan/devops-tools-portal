@@ -112,16 +112,39 @@ asyncio.run(test())
 
 
 
-async def test_issue():
-    url = "http://localhost:9000/mcp"
-    async with streamablehttp_client(url) as (read, write, _):
+import asyncio
+import json
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+MCP_URL = "http://localhost:9000/mcp"
+ISSUE_KEY = "DDLT-111"
+
+async def main():
+    async with streamablehttp_client(MCP_URL) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
+
             result = await session.call_tool(
                 "jiraGetIssue",
-                arguments={"key": "DDLT-111"}   # đổi key theo Jira của bạn
+                arguments={"key": ISSUE_KEY}
             )
-            print(result)
+
+            print("\n=== RAW CONTENT BLOCKS ===")
+            for block in result.content:
+                print(block)
+
+            print("\n=== PARSED ISSUE JSON ===")
+            for block in result.content:
+                if hasattr(block, "text"):
+                    try:
+                        issue = json.loads(block.text)
+                        print(json.dumps(issue, indent=2))
+                    except Exception:
+                        print("Not JSON block:", block.text)
+
+asyncio.run(main())
+
 
 
 
