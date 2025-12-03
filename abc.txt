@@ -146,5 +146,127 @@ async def main():
 asyncio.run(main())
 
 
+import asyncio
+import json
+import requests
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+# ===========================
+# CONFIG
+# ===========================
+MCP_URL = "http://localhost:9000/mcp"
+LLAMA_URL = "http://localhost:11434/api/chat"     # Ollama endpoint
+
+# ===========================
+# CALL LLaMA (step 1)
+# ===========================
+def call_llama(messages):
+    payload = {
+        "model": "llama3.1",
+        "messages": messages,
+        "stream": False
+    }
+
+    r = requests.post(LLAMA_URL, json=payload)
+    r.raise_for_status()
+    return r.json()
+
+
+# ===========================
+# HANDLE TOOL CALLS
+# ===========================
+async def call_mcp_tool(tool_name, arguments):
+    async with streamablehttp_client(MCP_URL) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, arguments)
+
+            # parse MCP text blocks
+            for block in result.content:
+                if hasattr(block, "text"):
+                    try:
+                        return json.loads(block.text)
+                    except:
+                        return block.text
+
+    return None
+
+
+# ===========================
+# MAIN AGENT LOGIC
+# ===========================
+async def ask_jira_agent(user_question):
+    print(f"\n===== USER ASKS: {user_question} =====\n")
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an AI assistant with access to Jira tools. "
+                "If user asks about Jira issues, ALWAYS produce tool calls in JSON like:\n"
+                "{\"tool\": \"jira_get_issue\", \"arguments\": {\"key\": \"DDLT-111\"}}\n"
+            )
+        },
+        {
+            "role": "user",
+            "content": user_question
+        }
+    ]
+
+    # Step 1 — Ask LLaMA what tool to call
+    llama_res = call_llama(messages)
+    assistant_msg = llama_res["message"]
+
+    print("STEP 1 — LLaMA response:")
+    print(assistant_msg)
+
+    # Step 2 — Detect tool call
+    tool_calls = assistant_msg.get("tool_calls", [])
+
+    if not tool_calls:
+        print("❌ No tool calls detected.")
+        return assistant_msg["content"]
+
+    final_answer = None
+
+    # handle all tool calls
+    for tc in tool_calls:
+        tool_name = tc["tool"]
+        arguments = tc["arguments"]
+
+        print(f"\nSTEP 2 — Calling tool: {tool_name} with args = {arguments}")
+
+        tool_result = await call_mcp_tool(tool_name, arguments)
+
+        print("\nSTEP 3 — MCP TOOL RESULT:")
+        print(json.dumps(tool_result, indent=2))
+
+        # Step 4 — Feed tool result back to LLaMA for final answer
+        followup_messages = [
+            *messages,
+            assistant_msg,
+            {
+                "role": "tool",
+                "content": json.dumps(tool_result),
+                "name": tool_name
+            }
+        ]
+
+        final_llama = call_llama(followup_messages)
+        final_answer = final_llama["message"]["content"]
+
+    print("\n===== FINAL ANSWER FROM LLaMA =====")
+    print(final_answer)
+
+    return final_answer
+
+
+# ===========================
+# CLI EXAMPLE
+# ===========================
+if __name__ == "__main__":
+    question = input("Ask Jira Agent: ")
+    asyncio.run(ask_jira_agent(question))
 
 
