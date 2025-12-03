@@ -372,3 +372,137 @@ Explain to the user in clear English or Vietnamese depending on question.
 if __name__ == "__main__":
     q = input("Ask Jira Agent: ")
     asyncio.run(ask_jira_agent(q))
+
+
+import asyncio
+import json
+import re
+import requests
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+# ===========================
+# CONFIG
+# ===========================
+LLAMA_URL = "https://your-llama4-server.com/v1/text/generate"
+MCP_URL = "http://localhost:9000/mcp"
+
+
+# ===========================
+# LLaMA4 GENERATE API
+# ===========================
+def llama_generate(prompt):
+    resp = requests.post(
+        LLAMA_URL,
+        json={
+            "prompt": prompt,
+            "temperature": 0,
+            "max_tokens": 512
+        }
+    )
+    resp.raise_for_status()
+    return resp.json()["text"]
+
+
+# ===========================
+# MCP TOOL CALL
+# ===========================
+async def call_mcp_tool(tool_name, arguments):
+    async with streamablehttp_client(MCP_URL) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            result = await session.call_tool(tool_name, arguments)
+
+            for block in result.content:
+                if hasattr(block, "text"):
+                    try:
+                        return json.loads(block.text)
+                    except:
+                        return block.text
+    return None
+
+
+# ===========================
+# TOOL CALL JSON PARSER
+# ===========================
+def extract_tool_call(response_text):
+    print("\nRAW RESPONSE:", repr(response_text))
+
+    match = re.search(r"<tool_call>(.*?)</tool_call>", response_text, re.DOTALL)
+    if not match:
+        return None
+
+    json_str = match.group(1).strip()
+
+    # Clean invisible chars
+    json_str = "".join(ch for ch in json_str if ord(ch) < 128)
+
+    # Remove line breaks
+    json_str = json_str.replace("\n", "").replace("\r", "").strip()
+
+    return json.loads(json_str)
+
+
+# ===========================
+# MAIN AGENT LOGIC
+# ===========================
+async def ask_jira_agent(question):
+
+    system_prompt = """
+You are a Jira assistant.
+When the user asks about Jira issues, respond ONLY with this format:
+
+<tool_call>
+{"tool": "jira_get_issue", "arguments": {"key": "DDLT-111"}}
+</tool_call>
+
+Rules:
+- No explanation
+- No natural language outside JSON
+- JSON must be strict, valid, and use double quotes
+"""
+
+    # STEP 1 — Ask the model to decide tool call
+    prompt = system_prompt + "\nUser: " + question
+    response = llama_generate(prompt)
+
+    print("\nSTEP 1 — MODEL DECISION:")
+    print(response)
+
+    tool_call = extract_tool_call(response)
+
+    if not tool_call:
+        print("\nNO TOOL CALL. FINAL ANSWER:")
+        return response
+
+    tool_name = tool_call["tool"]
+    arguments = tool_call["arguments"]
+
+    print(f"\nSTEP 2 — CALLING MCP TOOL {tool_name} with {arguments}")
+
+    tool_result = await call_mcp_tool(tool_name, arguments)
+
+    print("\nSTEP 3 — MCP RESULT:")
+    print(tool_result)
+
+    # STEP 4 — Ask LLaMA4 to generate natural answer
+    final_prompt = f"""
+You are a Jira assistant. 
+Summarize the following Jira issue result in a natural answer:
+
+{json.dumps(tool_result, indent=2)}
+"""
+
+    final_answer = llama_generate(final_prompt)
+
+    print("\nFINAL ANSWER:")
+    print(final_answer)
+    return final_answer
+
+
+# CLI
+if __name__ == "__main__":
+    q = input("Ask Jira Agent: ")
+    asyncio.run(ask_jira_agent(q))
+
