@@ -270,3 +270,105 @@ if __name__ == "__main__":
     asyncio.run(ask_jira_agent(question))
 
 
+
+
+import asyncio
+import json
+import requests
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+LLAMA_URL = "http://localhost:1234/v1/completions"
+MCP_URL = "http://localhost:9000/mcp"
+
+
+# === LLaMA call using only prompt ===
+def llama_generate(prompt):
+    payload = {
+        "prompt": prompt,
+        "max_tokens": 512,
+        "temperature": 0
+    }
+    r = requests.post(LLAMA_URL, json=payload)
+    r.raise_for_status()
+    return r.json()["text"]
+
+
+# === CALL MCP TOOL ===
+async def call_mcp_tool(tool_name, arguments):
+    async with streamablehttp_client(MCP_URL) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, arguments)
+
+            for block in result.content:
+                if hasattr(block, "text"):
+                    try:
+                        return json.loads(block.text)
+                    except:
+                        return block.text
+    return None
+
+
+# === MAIN AGENT ===
+async def ask_jira_agent(user_question):
+
+    # SYSTEM INSTRUCTIONS for tool calling
+    system_prompt = """
+You are a Jira assistant. 
+When you need to call a tool, output ONLY this format:
+
+<tool_call>
+{"tool": "jira_get_issue", "arguments": {"key": "DDLT-111"}}
+</tool_call>
+
+After receiving tool results, I will send them back to you.
+Then you respond with a natural language explanation.
+"""
+
+    # Ask LLaMA what to do
+    initial_prompt = system_prompt + "\nUser: " + user_question
+    response = llama_generate(initial_prompt)
+
+    print("\n=== MODEL RAW RESPONSE ===")
+    print(response)
+
+    # Detect <tool_call>
+    if "<tool_call>" not in response:
+        print("NO TOOL CALL → FINAL ANSWER:")
+        return response
+
+    json_str = response.split("<tool_call>")[1].split("</tool_call>")[0].strip()
+    tool_call = json.loads(json_str)
+
+    tool_name = tool_call["tool"]
+    arguments = tool_call["arguments"]
+
+    print(f"\nDetected tool call: {tool_name} {arguments}")
+
+    # Call MCP tool
+    result = await call_mcp_tool(tool_name, arguments)
+
+    print("\n=== MCP RESULT ===")
+    print(result)
+
+    # Final prompt to LLaMA to explain result
+    final_prompt = f"""
+System: Here are the Jira results from the tool call:
+{json.dumps(result)}
+
+Explain to the user in clear English or Vietnamese depending on question.
+"""
+
+    final_answer = llama_generate(final_prompt)
+
+    print("\n=== FINAL ANSWER ===")
+    print(final_answer)
+
+    return final_answer
+
+
+# CLI
+if __name__ == "__main__":
+    q = input("Ask Jira Agent: ")
+    asyncio.run(ask_jira_agent(q))
