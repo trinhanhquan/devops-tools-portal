@@ -94,3 +94,34 @@ ETL	Jira API + Python
 Dockerized?	Yes (optional)
 
 
+import asyncio
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async def test():
+    url = "http://localhost:9000/mcp"
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            resp = await session.list_tools()
+            print("Tools:", [t.name for t in resp.tools])
+
+asyncio.run(test())
+
+
+
+
+
+async def test_issue():
+    url = "http://localhost:9000/mcp"
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "jiraGetIssue",
+                arguments={"key": "DDLT-111"}   # đổi key theo Jira của bạn
+            )
+            print(result)
+
+
+
