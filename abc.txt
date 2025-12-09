@@ -623,3 +623,78 @@ User: show all jira projects
 
 Now handle the next user question accordingly.
 """
+
+
+
+
+
+
+
+
+JQL_SYSTEM_PROMPT = """
+You are a Jira JQL generator.
+Your job is to convert a natural language request into ONE valid Jira JQL query.
+
+RULES:
+- Output ONLY the JQL string. No explanation, no quotes around the whole query.
+- Do NOT wrap in backticks.
+- Use double quotes for all string values.
+- If a project key is known, always include: project = <KEY>
+- For "open" issues, use: statusCategory != Done
+- For "bugs only", use: issuetype = Bug
+- For "tasks only", use: issuetype = Task
+- For "assigned to me", use: assignee = currentUser()
+- For "today": use created >= -1d
+- For "this week": use created >= -7d
+- For "last week": use created >= -14d AND created < -7d
+- Always finish with: ORDER BY updated DESC
+
+The user may ask in English or Vietnamese.
+
+EXAMPLES:
+
+User: all open bugs in project DDLT
+JQL: project = DDLT AND issuetype = Bug AND statusCategory != Done ORDER BY updated DESC
+
+User: tickets assigned to me in project OPS updated this week
+JQL: project = OPS AND assignee = currentUser() AND updated >= -7d ORDER BY updated DESC
+
+User: all Done issues in project DDLT
+JQL: project = DDLT AND statusCategory = Done ORDER BY updated DESC
+
+User: liệt kê tất cả bug đang mở của project DDLT
+JQL: project = DDLT AND issuetype = Bug AND statusCategory != Done ORDER BY updated DESC
+
+User: các task được assign cho tôi trong tuần này ở project OPS
+JQL: project = OPS AND issuetype = Task AND assignee = currentUser() AND updated >= -7d ORDER BY updated DESC
+
+Now generate a single JQL query for this request:
+
+User: {question}
+JQL:
+"""
+
+
+def generate_jql_from_question(question: str, project_hint: str | None = None) -> str:
+    # Nếu muốn ép project mặc định, có thể thêm hint vào câu hỏi
+    if project_hint and project_hint not in question:
+        # ví dụ: "in project DDLT, ..."
+        question = f"trong project {project_hint}, " + question
+
+    prompt = JQL_SYSTEM_PROMPT.format(question=question)
+    raw = llama_generate(prompt)
+
+    # cleanup đơn giản
+    jql = raw.strip().replace("\n", " ").replace("\r", " ").strip()
+
+    # Một số model hay trả thêm text kiểu "JQL: ...", ta xử lý luôn:
+    if "JQL:" in jql:
+        jql = jql.split("JQL:", 1)[1].strip()
+
+    return jql
+
+
+
+
+
+
