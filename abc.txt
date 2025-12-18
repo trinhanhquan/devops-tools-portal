@@ -694,6 +694,24 @@ def generate_jql_from_question(question: str, project_hint: str | None = None) -
     return jql
 
 
+import org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval
+
+def sa = ScriptApproval.get()
+
+sa.pendingSignatures.each {
+    println "Approving signature: ${it}"
+    sa.approveSignature(it)
+}
+
+sa.pendingScripts.each {
+    println "Approving script: ${it.hash}"
+    sa.approveScript(it.hash)
+}
+
+println "DONE - All pending scripts approved"
+
+
+
 
 
 
