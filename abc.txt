@@ -892,6 +892,97 @@ def logout(request: Request):
     clear_session(request)
     return RedirectResponse("/login", status_code=302)
 
+import os
+import logging
+from ldap3 import Server, Connection, ALL, SUBTREE
+
+log = logging.getLogger("ldap")
+
+def _env(name: str, default: str = "") -> str:
+    return (os.getenv(name, default) or "").strip()
+
+def _debug(msg: str):
+    if _env("LDAP_DEBUG", "false").lower() == "true":
+        log.warning("[LDAP] " + msg)
+
+def ldap_enabled() -> bool:
+    enabled = _env("LDAP_ENABLED", "false").lower() == "true"
+    _debug(f"LDAP_ENABLED={enabled}")
+    return enabled
+
+def ldap_verify_login(username: str, password: str) -> dict | None:
+    if not ldap_enabled():
+        _debug("LDAP disabled, skipping")
+        return None
+
+    ldap_url = _env("LDAP_URL")
+    base_dn = _env("LDAP_BASE_DN")
+    bind_dn = _env("LDAP_BIND_DN")
+    bind_pw = _env("LDAP_BIND_PASSWORD")
+    user_attr = _env("LDAP_USER_ATTR", "sAMAccountName")
+    user_filter_tpl = _env("LDAP_USER_FILTER", "(&(objectClass=user)({attr}={username}))")
+
+    _debug(f"LDAP_URL={ldap_url}")
+    _debug(f"BASE_DN={base_dn}")
+    _debug(f"USER_ATTR={user_attr}")
+
+    if not ldap_url or not base_dn:
+        _debug("Missing LDAP_URL or LDAP_BASE_DN")
+        return None
+
+    server = Server(ldap_url, get_info=ALL)
+
+    # 1) Search user DN
+    try:
+        if bind_dn and bind_pw:
+            _debug(f"Binding search user {bind_dn}")
+            search_conn = Connection(server, user=bind_dn, password=bind_pw, auto_bind=True)
+        else:
+            _debug("Anonymous search bind")
+            search_conn = Connection(server, auto_bind=True)
+    except Exception as e:
+        _debug(f"Search bind failed: {e}")
+        return None
+
+    try:
+        search_filter = user_filter_tpl.format(attr=user_attr, username=username)
+        _debug(f"Search filter: {search_filter}")
+
+        search_conn.search(
+            search_base=base_dn,
+            search_filter=search_filter,
+            search_scope=SUBTREE,
+            attributes=["distinguishedName"],
+        )
+
+        if not search_conn.entries:
+            _debug("User not found in LDAP")
+            return None
+
+        user_dn = str(search_conn.entries[0].entry_dn)
+        _debug(f"Found user DN: {user_dn}")
+
+    except Exception as e:
+        _debug(f"Search error: {e}")
+        return None
+    finally:
+        search_conn.unbind()
+
+    # 2) Bind as user DN (verify password)
+    try:
+        _debug(f"Trying bind as user DN")
+        user_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
+        user_conn.unbind()
+        _debug("User bind success")
+    except Exception as e:
+        _debug(f"User bind failed (bad password?): {e}")
+        return None
+
+    return {
+        "username": username,
+        "user_dn": user_dn,
+        "auth_type": "ldap",
+    }
 
 
 
