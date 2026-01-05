@@ -711,6 +711,109 @@ sa.pendingScripts.each {
 println "DONE - All pending scripts approved"
 
 
+LDAP_ENABLED=true
+LDAP_URL=ldaps://ad.company.local:636
+LDAP_BASE_DN=DC=company,DC=local
+
+# bind account để search user DN (khuyên dùng)
+LDAP_BIND_DN=CN=svc-recert,OU=Service Accounts,DC=company,DC=local
+LDAP_BIND_PASSWORD=YourBindPassword
+
+# login bằng username kiểu sAMAccountName
+LDAP_USER_ATTR=sAMAccountName
+
+# filter tìm user DN
+LDAP_USER_FILTER=(&(objectClass=user)({attr}={username}))
+
+import os
+from ldap3 import Server, Connection, ALL, SUBTREE
+
+def _env(name: str, default: str = "") -> str:
+    return (os.getenv(name, default) or "").strip()
+
+def ldap_enabled() -> bool:
+    return _env("LDAP_ENABLED", "false").lower() == "true"
+
+def ldap_verify_login(username: str, password: str) -> dict | None:
+    """
+    Verify username/password against AD via LDAP.
+    Return dict on success:
+      { "username": <input username>, "user_dn": <distinguishedName>, "auth_type": "ldap" }
+    Return None on failure.
+    """
+    if not ldap_enabled():
+        return None
+
+    ldap_url = _env("LDAP_URL")
+    base_dn = _env("LDAP_BASE_DN")
+    bind_dn = _env("LDAP_BIND_DN")
+    bind_pw = _env("LDAP_BIND_PASSWORD")
+    user_attr = _env("LDAP_USER_ATTR", "sAMAccountName")
+    user_filter_tpl = _env("LDAP_USER_FILTER", "(&(objectClass=user)({attr}={username}))")
+
+    if not ldap_url or not base_dn:
+        return None
+
+    server = Server(ldap_url, get_info=ALL)
+
+    # 1) Bind with service account to search user's DN
+    try:
+        if bind_dn and bind_pw:
+            search_conn = Connection(server, user=bind_dn, password=bind_pw, auto_bind=True)
+        else:
+            # not recommended; many ADs disable anonymous search
+            search_conn = Connection(server, auto_bind=True)
+    except Exception:
+        return None
+
+    try:
+        search_filter = user_filter_tpl.format(attr=user_attr, username=username)
+        search_conn.search(
+            search_base=base_dn,
+            search_filter=search_filter,
+            search_scope=SUBTREE,
+            attributes=["distinguishedName"],
+        )
+        if not search_conn.entries:
+            return None
+
+        user_dn = str(search_conn.entries[0].entry_dn)
+    finally:
+        search_conn.unbind()
+
+    # 2) Bind as the user DN with provided password (this verifies login)
+    try:
+        user_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
+        user_conn.unbind()
+    except Exception:
+        return None
+
+    return {"username": username, "user_dn": user_dn, "auth_type": "ldap"}
+
+
+
+from app.auth.ldap_auth import ldap_verify_login
+from app.auth.local_auth import authenticate as local_authenticate
+
+# ...
+user = None
+
+# LDAP first
+ldap_user = ldap_verify_login(username, password)
+if ldap_user:
+    # role sẽ lấy từ DB ở Step B, tạm thời cho recert_user để vào app
+    user = {"username": ldap_user["username"], "roles": ["recert_user"], "auth_type": "ldap"}
+
+# fallback local
+if not user:
+    user = local_authenticate(username, password)
+
+if not user:
+    return templates.TemplateResponse("login.html", {"request": request, "error": "Login failed"})
+
+set_session(request, user)
+return RedirectResponse("/ui/form", status_code=302)
+
 
 
 
