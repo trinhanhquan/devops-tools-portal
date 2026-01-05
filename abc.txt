@@ -819,3 +819,82 @@ return RedirectResponse("/ui/form", status_code=302)
 
 
 
+
+from fastapi import APIRouter, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from app.auth.session import set_session, clear_session
+from app.auth.ldap_auth import ldap_verify_login
+from app.auth.local_auth import authenticate as local_authenticate
+
+router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
+
+
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "error": None,
+        },
+    )
+
+
+@router.post("/login", response_class=HTMLResponse)
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    """
+    Login flow:
+    1) Try LDAP (verify username/password only)
+    2) Fallback to local user (break-glass)
+    3) Set session
+    """
+
+    user = None
+
+    # --- 1) LDAP authentication (login only, no role mapping) ---
+    ldap_user = ldap_verify_login(username, password)
+    if ldap_user:
+        # Step B: roles will be loaded from DB later
+        user = {
+            "username": ldap_user["username"],
+            "roles": ["recert_user"],   # temporary default
+            "auth_type": "ldap",
+        }
+
+    # --- 2) Local fallback ---
+    if not user:
+        user = local_authenticate(username, password)
+
+    # --- 3) Login failed ---
+    if not user:
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "error": "Invalid username or password",
+            },
+        )
+
+    # --- 4) Success ---
+    set_session(request, user)
+    return RedirectResponse("/ui/form", status_code=302)
+
+
+@router.post("/logout")
+def logout(request: Request):
+    clear_session(request)
+    return RedirectResponse("/login", status_code=302)
+
+
+
+
+
+
+
