@@ -8,3 +8,14 @@ r = requests.get(url, timeout=10)
 print("Status =", r.status_code)
 print("Body =", json.dumps(r.json(), indent=2))
 PY
+
+
+hits = payload.get("hits", {}).get("hits", [])
+log.info("Found %s hits", len(hits))
+
+if hits:
+    log.info("First hit keys=%s", list((hits[0] or {}).keys()))
+    log.info("First hit _source=%s", (hits[0] or {}).get("_source"))
+else:
+    # in a small snippet of payload to understand shape
+    log.info("No hits. Payload top-level keys=%s", list(payload.keys()))
