@@ -1,63 +1,76 @@
-import uuid
-from sqlalchemy import Column, String, DateTime
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.sql import func
+import os
+import requests
+from fastapi import APIRouter, HTTPException
 
-class UserRole(Base):
-    __tablename__ = "user_roles"
+router = APIRouter(prefix="/api")
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username = Column(String, index=True, nullable=False)
-    role = Column(String, nullable=False)
+APP_LIST_API = os.getenv("APP_LIST_API", "")
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    created_by = Column(String, nullable=True)
+@router.get("/apps")
+def get_apps():
+    if not APP_LIST_API:
+        raise HTTPException(status_code=500, detail="APP_LIST_API is not set")
 
+    try:
+        r = requests.get(APP_LIST_API, timeout=8)
+        r.raise_for_status()
+        payload = r.json()
 
-docker compose exec -T web alembic revision --autogenerate -m "add user_roles table"
+        hits = payload.get("hits", {}).get("hits", [])
+        apps = []
+        seen = set()
 
-docker compose exec -T web alembic upgrade head
+        for h in hits:
+            src = (h or {}).get("_source", {}) or {}
+            code = (src.get("App code") or "").strip()
+            if code and code not in seen:
+                seen.add(code)
+                apps.append({"code": code, "name": code})
 
-docker compose exec -T postgres psql -U recert -d recertdb -c "\dt"
+        apps.sort(key=lambda x: x["code"])
+        return apps
 
-from app.db.models import UserRole
-from app.db.database import SessionLocal  # đúng import theo project bạn
-
-def get_roles_for_user(username: str) -> list[str]:
-    with SessionLocal() as db:
-        rows = db.query(UserRole.role).filter(UserRole.username == username).all()
-        roles = [r[0] for r in rows]
-    if "recert_user" not in roles:
-        roles.append("recert_user")
-    return roles
-
-def add_role(username: str, role: str, actor: str | None = None):
-    with SessionLocal() as db:
-        db.add(UserRole(username=username, role=role, created_by=actor))
-        db.commit()
-
-def remove_role(username: str, role: str):
-    with SessionLocal() as db:
-        db.query(UserRole).filter(UserRole.username == username, UserRole.role == role).delete()
-        db.commit()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Parse error: {e}")
 
 
+from app.routes.api import router as api_router
+app.include_router(api_router)
 
-from app.db.repository import get_roles_for_user
+APP_LIST_API=https://<your-system>/search/apps
 
-roles = get_roles_for_user(ldap_user["username"])
+<label>System / Application</label>
+<select name="system_name" id="appSelect" required>
+  <option value="">Loading...</option>
+</select>
 
-user = {
-  "username": ldap_user["username"],
-  "roles": roles,
-  "auth_type": "ldap",
-}
+<script>
+(async function () {
+  const select = document.getElementById("appSelect");
 
+  try {
+    const res = await fetch("/api/apps", { credentials: "same-origin" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
 
+    const apps = await res.json(); // expected: [{code:"DVX",name:"DVX"},...]
+    select.innerHTML = "";
 
+    if (!apps.length) {
+      select.innerHTML = "<option value=''>No apps found</option>";
+      return;
+    }
 
-docker compose exec -T web python - <<'PY'
-from app.db.repository import add_role
-add_role("anhquantrinh", "recert_admin", actor="bootstrap")
-PY
-
+    for (const app of apps) {
+      const opt = document.createElement("option");
+      opt.value = app.code;
+      opt.textContent = app.name || app.code;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    console.error("Failed to load apps", e);
+    select.innerHTML = "<option value=''>Failed to load</option>";
+  }
+})();
+</script>
