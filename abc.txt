@@ -1,21 +1,97 @@
-docker compose exec -T web python - <<'PY'
-import requests, os, json
+import os
+import requests
+import logging
+from fastapi import APIRouter, HTTPException
 
-url = os.getenv("APP_LIST_API")
-print("URL =", url)
+router = APIRouter(prefix="/api")
+log = logging.getLogger("api.apps")
 
-r = requests.get(url, timeout=10)
-print("Status =", r.status_code)
-print("Body =", json.dumps(r.json(), indent=2))
-PY
+APP_LIST_API = os.getenv("APP_LIST_API", "")
+VERIFY_ENV = os.getenv("APP_LIST_SSL_VERIFY", "false").lower()  # default false for your internal cert
+VERIFY_SSL = VERIFY_ENV in ("1", "true", "yes", "on")
+
+def _extract_app_code(src: dict) -> str:
+    # 1) exact key you showed
+    val = src.get("App code")
+
+    # 2) fallback - try common variants / case-insensitive
+    if val is None:
+        for k, v in src.items():
+            kk = str(k).strip().lower()
+            if kk in ("app code", "app_code", "appcode", "application", "application code", "app"):
+                val = v
+                break
+
+    # normalize list -> first element
+    if isinstance(val, list) and val:
+        val = val[0]
+
+    if val is None:
+        return ""
+
+    return str(val).strip()
+
+@router.get("/apps")
+def get_apps():
+    log.info("GET /api/apps called")
+    if not APP_LIST_API:
+        log.error("APP_LIST_API is not set")
+        raise HTTPException(status_code=500, detail="APP_LIST_API is not set")
+
+    log.info("Calling upstream=%s verify_ssl=%s", APP_LIST_API, VERIFY_SSL)
+
+    try:
+        r = requests.get(APP_LIST_API, timeout=12, verify=VERIFY_SSL)
+        log.info("Upstream status=%s", r.status_code)
+        r.raise_for_status()
+
+        payload = r.json()
+
+        # --- debug shape ---
+        log.info("Payload top keys=%s", list(payload.keys()))
+        hits_obj = payload.get("hits", {})
+        log.info("Payload.hits keys=%s", list(hits_obj.keys()) if isinstance(hits_obj, dict) else type(hits_obj))
+
+        hits = (hits_obj or {}).get("hits", [])
+        log.info("Found hits count=%s", len(hits) if isinstance(hits, list) else f"type={type(hits)}")
+
+        if isinstance(hits, list) and hits:
+            first = hits[0] or {}
+            log.info("First hit keys=%s", list(first.keys()))
+            log.info("First hit _source=%s", first.get("_source"))
+
+        # --- extract codes ---
+        apps = []
+        seen = set()
+
+        if isinstance(hits, list):
+            for idx, h in enumerate(hits):
+                src = (h or {}).get("_source", {}) or {}
+                code = _extract_app_code(src)
+
+                if not code:
+                    if idx < 5:
+                        log.warning("Hit[%s] no app code. _source keys=%s", idx, list(src.keys()))
+                    continue
+
+                if code not in seen:
+                    seen.add(code)
+                    apps.append({"code": code, "name": code})
+
+        apps.sort(key=lambda x: x["code"])
+        log.info("Returning apps=%s", [a["code"] for a in apps])
+
+        return apps
+
+    except requests.RequestException as e:
+        log.exception("Upstream HTTP error")
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        log.exception("Parse error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-hits = payload.get("hits", {}).get("hits", [])
-log.info("Found %s hits", len(hits))
 
-if hits:
-    log.info("First hit keys=%s", list((hits[0] or {}).keys()))
-    log.info("First hit _source=%s", (hits[0] or {}).get("_source"))
-else:
-    # in a small snippet of payload to understand shape
-    log.info("No hits. Payload top-level keys=%s", list(payload.keys()))
+
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
