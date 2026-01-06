@@ -1,76 +1,10 @@
-import os
-import requests
-from fastapi import APIRouter, HTTPException
+docker compose exec -T web python - <<'PY'
+import requests, os, json
 
-router = APIRouter(prefix="/api")
+url = os.getenv("APP_LIST_API")
+print("URL =", url)
 
-APP_LIST_API = os.getenv("APP_LIST_API", "")
-
-@router.get("/apps")
-def get_apps():
-    if not APP_LIST_API:
-        raise HTTPException(status_code=500, detail="APP_LIST_API is not set")
-
-    try:
-        r = requests.get(APP_LIST_API, timeout=8)
-        r.raise_for_status()
-        payload = r.json()
-
-        hits = payload.get("hits", {}).get("hits", [])
-        apps = []
-        seen = set()
-
-        for h in hits:
-            src = (h or {}).get("_source", {}) or {}
-            code = (src.get("App code") or "").strip()
-            if code and code not in seen:
-                seen.add(code)
-                apps.append({"code": code, "name": code})
-
-        apps.sort(key=lambda x: x["code"])
-        return apps
-
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Parse error: {e}")
-
-
-from app.routes.api import router as api_router
-app.include_router(api_router)
-
-APP_LIST_API=https://<your-system>/search/apps
-
-<label>System / Application</label>
-<select name="system_name" id="appSelect" required>
-  <option value="">Loading...</option>
-</select>
-
-<script>
-(async function () {
-  const select = document.getElementById("appSelect");
-
-  try {
-    const res = await fetch("/api/apps", { credentials: "same-origin" });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-
-    const apps = await res.json(); // expected: [{code:"DVX",name:"DVX"},...]
-    select.innerHTML = "";
-
-    if (!apps.length) {
-      select.innerHTML = "<option value=''>No apps found</option>";
-      return;
-    }
-
-    for (const app of apps) {
-      const opt = document.createElement("option");
-      opt.value = app.code;
-      opt.textContent = app.name || app.code;
-      select.appendChild(opt);
-    }
-  } catch (e) {
-    console.error("Failed to load apps", e);
-    select.innerHTML = "<option value=''>Failed to load</option>";
-  }
-})();
-</script>
+r = requests.get(url, timeout=10)
+print("Status =", r.status_code)
+print("Body =", json.dumps(r.json(), indent=2))
+PY
