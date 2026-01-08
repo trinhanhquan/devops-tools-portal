@@ -2,13 +2,13 @@ import jenkins.model.*
 import hudson.model.*
 import hudson.model.ParametersDefinitionProperty
 
+import hudson.model.StringParameterDefinition
+import hudson.model.BooleanParameterDefinition
+
 import org.biouno.unochoice.ChoiceParameter
 import org.biouno.unochoice.CascadeChoiceParameter
 import org.biouno.unochoice.model.GroovyScript
 import org.jenkinsci.plugins.scriptsecurity.sandbox.groovy.SecureGroovyScript
-
-import hudson.model.StringParameterDefinition
-import hudson.model.BooleanParameterDefinition
 
 // =====================
 // CONFIG
@@ -16,15 +16,13 @@ import hudson.model.BooleanParameterDefinition
 def JOB_FULL_NAME = "IDB_entitlement-service/entitlement-service_aldon"
 def DRY_RUN = true
 
-def TARGET_PARAM = "BRANCH_TYPE"   // param name bạn muốn upsert
+def TARGET_PARAM = "BRANCH_TYPE"
 
-// Nếu param đã tồn tại:
-// - Active Choices: update script / referencedParameters / choiceType ...
-// - Core params: update defaultValue / description ...
+// patch bạn muốn apply (tuỳ param type mà dùng field phù hợp)
 def PATCH = [
-  description: "Updated by smart script",
+  description: "Updated by script (smart detect type)",
 
-  // Active Choices / Reactive:
+  // Active Choices / Reactive script patches
   mainScript: """
 return ['opt1','opt2','opt3']
 """,
@@ -32,22 +30,22 @@ return ['opt1','opt2','opt3']
   fallbackScript: "",
   fallbackSandbox: false,
 
-  // Cascade only:
+  // Cascade only
   referencedParameters: "MODULE_NAME, FOLDER_NAME",
 
-  // Optional (Active Choices types):
+  // optional fields (setters)
+  visibleItemCount: 1,
   choiceType: "PT_SINGLE_SELECT",
   filterable: false,
   filterLength: 1,
-  visibleItemCount: 1,
 
-  // Core params:
+  // Core params
   stringDefault: "hello",
   booleanDefault: true
 ]
 
-// Nếu param CHƯA tồn tại, bạn muốn add mới theo type nào?
-// choices: "uno-choice-choice" | "uno-choice-cascade" | "string" | "boolean"
+// Nếu param chưa tồn tại: add mới theo loại này
+// "uno-choice-choice" | "uno-choice-cascade" | "string" | "boolean"
 def DEFAULT_NEW_TYPE = "uno-choice-cascade"
 
 // =====================
@@ -62,17 +60,15 @@ def mkGroovyScript(Map patch) {
 }
 def mkRandomName() { "choice-parameter-${System.nanoTime()}" }
 
-def findParamTypeFromConfigXml(String xmlText, String paramName) {
+def detectTypeFromConfigXml(String xmlText, String paramName) {
   def root = new XmlSlurper(false, false).parseText(xmlText)
-
   def defs = root?.properties?.'hudson.model.ParametersDefinitionProperty'?.parameterDefinitions?.children()
-  if (!defs) return [exists:false, type:null, node:null]
+  if (!defs) return [exists:false, type:null]
 
   def node = defs.find { it?.name?.text() == paramName }
-  if (!node) return [exists:false, type:null, node:null]
+  if (!node) return [exists:false, type:null]
 
-  // node.name() trả về tên tag, ví dụ: "org.biouno.unochoice.CascadeChoiceParameter"
-  return [exists:true, type: node.name() as String, node: node]
+  return [exists:true, type:(node.name() as String)]
 }
 
 def upsert(List defs, ParameterDefinition newDef) {
@@ -82,43 +78,55 @@ def upsert(List defs, ParameterDefinition newDef) {
   return idx
 }
 
-// =====================
-// Builders per type
-// =====================
-def buildUnoChoiceChoice(String name, def oldP, Map patch) {
-  def desc = patch.description ?: (oldP?.description ?: "")
-  def randomName = oldP?.randomName ?: mkRandomName()
-  def visibleItemCount = (patch.containsKey('visibleItemCount') ? patch.visibleItemCount : (oldP?.visibleItemCount ?: 1)) as int
-  def choiceType = patch.choiceType ?: (oldP?.choiceType ?: "PT_SINGLE_SELECT")
-  def filterable = (patch.containsKey('filterable') ? patch.filterable : (oldP?.filterable ?: false)) as boolean
-  def filterLength = (patch.containsKey('filterLength') ? patch.filterLength : (oldP?.filterLength ?: 1)) as int
+// Safe setters (tùy version plugin có/không có)
+def trySet(obj, String method, Object val) {
+  try {
+    obj."${method}"(val)
+    return true
+  } catch (ignored) {
+    return false
+  }
+}
 
-  return new ChoiceParameter(
+// =====================
+// Builders (use correct constructors)
+// =====================
+def buildUnoChoiceChoice(String name, def oldObj, Map patch) {
+  def desc = patch.description ?: (oldObj?.description ?: "")
+  def randomName = oldObj?.randomName ?: mkRandomName()
+  def choiceType = patch.choiceType ?: (oldObj?.choiceType ?: "PT_SINGLE_SELECT")
+  def filterable = (patch.containsKey('filterable') ? patch.filterable : (oldObj?.filterable ?: false)) as boolean
+  def filterLength = (patch.containsKey('filterLength') ? patch.filterLength : (oldObj?.filterLength ?: 1)) as int
+
+  def p = new ChoiceParameter(
     name,
     desc,
     randomName,
-    visibleItemCount,
     mkGroovyScript(patch),
     choiceType,
     filterable,
     filterLength
   )
+
+  if (patch.containsKey('visibleItemCount')) {
+    trySet(p, "setVisibleItemCount", (patch.visibleItemCount as int))
+  }
+  return p
 }
 
-def buildUnoChoiceCascade(String name, def oldP, Map patch) {
-  def desc = patch.description ?: (oldP?.description ?: "")
-  def randomName = oldP?.randomName ?: mkRandomName()
-  def visibleItemCount = (patch.containsKey('visibleItemCount') ? patch.visibleItemCount : (oldP?.visibleItemCount ?: 1)) as int
-  def choiceType = patch.choiceType ?: (oldP?.choiceType ?: "PT_SINGLE_SELECT")
-  def referenced = patch.referencedParameters ?: (oldP?.referencedParameters ?: "")
-  def filterable = (patch.containsKey('filterable') ? patch.filterable : (oldP?.filterable ?: false)) as boolean
-  def filterLength = (patch.containsKey('filterLength') ? patch.filterLength : (oldP?.filterLength ?: 1)) as int
+def buildUnoChoiceCascade(String name, def oldObj, Map patch) {
+  def desc = patch.description ?: (oldObj?.description ?: "")
+  def randomName = oldObj?.randomName ?: mkRandomName()
+  def choiceType = patch.choiceType ?: (oldObj?.choiceType ?: "PT_SINGLE_SELECT")
+  def referenced = patch.referencedParameters ?: (oldObj?.referencedParameters ?: "")
+  def filterable = (patch.containsKey('filterable') ? patch.filterable : (oldObj?.filterable ?: false)) as boolean
+  def filterLength = (patch.containsKey('filterLength') ? patch.filterLength : (oldObj?.filterLength ?: 1)) as int
 
-  def np = new CascadeChoiceParameter(
+  // ✅ constructor đúng (8 args) để tránh lỗi “no matching constructor”
+  def p = new CascadeChoiceParameter(
     name,
     desc,
     randomName,
-    visibleItemCount,
     mkGroovyScript(patch),
     choiceType,
     referenced,
@@ -126,20 +134,24 @@ def buildUnoChoiceCascade(String name, def oldP, Map patch) {
     filterLength
   )
 
-  // giữ nguyên map <parameters class="linked-hash-map"/> nếu có
-  try { np.setParameters(oldP?.getParameters()) } catch (ignored) {}
-  return np
+  if (patch.containsKey('visibleItemCount')) {
+    trySet(p, "setVisibleItemCount", (patch.visibleItemCount as int))
+  }
+  // giữ nguyên parameters map nếu có
+  trySet(p, "setParameters", oldObj?.getParameters())
+
+  return p
 }
 
-def buildStringParam(String name, def oldP, Map patch) {
-  def desc = patch.description ?: (oldP?.description ?: "")
-  def defVal = patch.containsKey('stringDefault') ? (patch.stringDefault ?: "") : (oldP?.defaultValue ?: "")
+def buildStringParam(String name, def oldObj, Map patch) {
+  def desc = patch.description ?: (oldObj?.description ?: "")
+  def defVal = patch.containsKey('stringDefault') ? (patch.stringDefault ?: "") : (oldObj?.defaultValue ?: "")
   return new StringParameterDefinition(name, defVal as String, desc as String)
 }
 
-def buildBooleanParam(String name, def oldP, Map patch) {
-  def desc = patch.description ?: (oldP?.description ?: "")
-  def defVal = (patch.containsKey('booleanDefault') ? patch.booleanDefault : oldP?.defaultValue) as boolean
+def buildBooleanParam(String name, def oldObj, Map patch) {
+  def desc = patch.description ?: (oldObj?.description ?: "")
+  def defVal = (patch.containsKey('booleanDefault') ? patch.booleanDefault : oldObj?.defaultValue) as boolean
   return new BooleanParameterDefinition(name, defVal, desc as String)
 }
 
@@ -151,53 +163,41 @@ def job = j.getItemByFullName(JOB_FULL_NAME)
 assert job != null : "Job not found: ${JOB_FULL_NAME}"
 
 def xmlText = job.getConfigFile().asString()
-def info = findParamTypeFromConfigXml(xmlText, TARGET_PARAM)
+def detected = detectTypeFromConfigXml(xmlText, TARGET_PARAM)
 
 println "Job: ${job.fullName}"
 println "Target param: ${TARGET_PARAM}"
-println "Found in config.xml? ${info.exists}"
-println "Detected type: ${info.type}"
+println "Found in config.xml? ${detected.exists}"
+println "Detected type: ${detected.type}"
 
 def prop = job.getProperty(ParametersDefinitionProperty)
 def defs = prop?.parameterDefinitions ? new ArrayList<>(prop.parameterDefinitions) : new ArrayList<>()
-
-// Lấy old param object (nếu có) để preserve randomName, choiceType... khi patch không set
 def oldObj = defs.find { it.name == TARGET_PARAM }
 
-// Quyết định type để build
-def finalType = info.exists ? info.type : null
-
+def type = detected.type
 ParameterDefinition newDef
 
-if (finalType == "org.biouno.unochoice.ChoiceParameter") {
+if (type == "org.biouno.unochoice.ChoiceParameter") {
   newDef = buildUnoChoiceChoice(TARGET_PARAM, oldObj, PATCH)
-} else if (finalType == "org.biouno.unochoice.CascadeChoiceParameter") {
+} else if (type == "org.biouno.unochoice.CascadeChoiceParameter") {
   newDef = buildUnoChoiceCascade(TARGET_PARAM, oldObj, PATCH)
-} else if (finalType == "hudson.model.StringParameterDefinition") {
+} else if (type == "hudson.model.StringParameterDefinition") {
   newDef = buildStringParam(TARGET_PARAM, oldObj, PATCH)
-} else if (finalType == "hudson.model.BooleanParameterDefinition") {
+} else if (type == "hudson.model.BooleanParameterDefinition") {
   newDef = buildBooleanParam(TARGET_PARAM, oldObj, PATCH)
 } else {
-  // param không tồn tại trong config.xml hoặc là type khác -> dùng DEFAULT_NEW_TYPE
-  println "Param not found (or unsupported type). Will create new by DEFAULT_NEW_TYPE=${DEFAULT_NEW_TYPE}"
-
+  println "Param not found or unsupported type -> will create new by DEFAULT_NEW_TYPE=${DEFAULT_NEW_TYPE}"
   switch (DEFAULT_NEW_TYPE) {
-    case "uno-choice-choice":
-      newDef = buildUnoChoiceChoice(TARGET_PARAM, null, PATCH); break
-    case "uno-choice-cascade":
-      newDef = buildUnoChoiceCascade(TARGET_PARAM, null, PATCH); break
-    case "string":
-      newDef = buildStringParam(TARGET_PARAM, null, PATCH); break
-    case "boolean":
-      newDef = buildBooleanParam(TARGET_PARAM, null, PATCH); break
-    default:
-      throw new IllegalArgumentException("Unknown DEFAULT_NEW_TYPE: ${DEFAULT_NEW_TYPE}")
+    case "uno-choice-choice":  newDef = buildUnoChoiceChoice(TARGET_PARAM, null, PATCH); break
+    case "uno-choice-cascade": newDef = buildUnoChoiceCascade(TARGET_PARAM, null, PATCH); break
+    case "string":            newDef = buildStringParam(TARGET_PARAM, null, PATCH); break
+    case "boolean":           newDef = buildBooleanParam(TARGET_PARAM, null, PATCH); break
+    default: throw new IllegalArgumentException("Unknown DEFAULT_NEW_TYPE: ${DEFAULT_NEW_TYPE}")
   }
 }
 
-// UPSERT
-def replacedIdx = upsert(defs, newDef)
-println(replacedIdx >= 0 ? "[UPSERT] updated existing at index=${replacedIdx}" : "[UPSERT] added new param")
+def idx = upsert(defs, newDef)
+println(idx >= 0 ? "[UPSERT] updated existing param" : "[UPSERT] added new param")
 
 if (!DRY_RUN) {
   job.removeProperty(ParametersDefinitionProperty)
