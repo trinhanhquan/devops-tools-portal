@@ -1,64 +1,77 @@
+@Library('your-trusted-shared-lib') _   // <-- nếu bạn có trusted shared library thì dùng; nếu không, xoá dòng này
 import jenkins.model.*
 import com.cloudbees.hudson.plugins.folder.Folder
 import hudson.model.TopLevelItem
 import hudson.model.ItemGroup
 
-// ========= CONFIG =========
-def ORIGINAL_FULLNAME = "IDB_entitlement-service/entitlement-service_aldon"
+pipeline {
+  agent any
 
-// Draft location
-def DRAFT_FOLDER_FULLNAME = "DRAFTS/IDB_entitlement-service"
-def DRAFT_JOB_NAME = "entitlement-service_aldon_draft"
+  parameters {
+    string(name: 'ORIGINAL_FULLNAME', defaultValue: 'IDB_entitlement-service/entitlement-service_aldon', description: 'Full name of original job')
+    string(name: 'DRAFT_FOLDER', defaultValue: 'DRAFTS/IDB_entitlement-service', description: 'Draft folder path (will be created if missing)')
+    string(name: 'DRAFT_JOB_NAME', defaultValue: 'entitlement-service_aldon_draft', description: 'Draft job name')
+    booleanParam(name: 'OVERWRITE_DRAFT', defaultValue: false, description: 'Delete draft if exists')
+  }
 
-def OVERWRITE_DRAFT_IF_EXISTS = false
+  stages {
+    stage('Create draft job') {
+      steps {
+        script {
+          // ---- helpers ----
+          def j = Jenkins.get()
 
-// ========= Helpers =========
-def j = Jenkins.get()
+          def mustGetJob = { String fullName ->
+            def it = j.getItemByFullName(fullName)
+            assert it != null : "Original job not found: ${fullName}"
+            assert it instanceof TopLevelItem : "Original is not a TopLevelItem: ${fullName} (${it.getClass()})"
+            return (TopLevelItem) it
+          }
 
-def mustGetJob(String fullName) {
-  def it = j.getItemByFullName(fullName)
-  assert it != null : "Original job not found: ${fullName}"
-  assert it instanceof TopLevelItem : "Original is not a TopLevelItem: ${fullName} (${it.getClass()})"
-  return (TopLevelItem) it
-}
+          def getOrCreateFolder = { String folderFullName ->
+            ItemGroup parent = j
+            if (!folderFullName?.trim()) return parent
 
-def getOrCreateFolder(String folderFullName) {
-  def parent = j as ItemGroup
-  if (!folderFullName?.trim()) return parent
+            folderFullName.split('/').findAll { it?.trim() }.each { name ->
+              def next = parent.getItem(name)
+              if (next == null) {
+                echo "Creating folder: ${name}"
+                next = parent.createProject(Folder.class, name)
+              } else {
+                assert next instanceof Folder : "Item '${name}' exists but is not a Folder: ${next.getClass()}"
+              }
+              parent = (ItemGroup) next
+            }
+            return parent
+          }
 
-  folderFullName.split('/').findAll { it?.trim() }.each { name ->
-    def next = parent.getItem(name)
-    if (next == null) {
-      println "Creating folder: ${name}"
-      next = parent.createProject(Folder.class, name)
-    } else {
-      assert next instanceof Folder : "Item '${name}' exists but is not a Folder: ${next.getClass()}"
+          def deleteIfExists = { ItemGroup parent, String name ->
+            def existing = parent.getItem(name)
+            if (existing != null) {
+              if (!params.OVERWRITE_DRAFT) {
+                error("Draft job already exists: ${existing.fullName}. Set OVERWRITE_DRAFT=true to overwrite.")
+              }
+              echo "Deleting existing draft: ${existing.fullName}"
+              existing.delete()
+            }
+          }
+
+          // ---- main ----
+          def original = mustGetJob(params.ORIGINAL_FULLNAME)
+          def xml = original.getConfigFile().asString()
+
+          def draftParent = getOrCreateFolder(params.DRAFT_FOLDER)
+          deleteIfExists(draftParent, params.DRAFT_JOB_NAME)
+
+          def draft = draftParent.createProjectFromXML(
+            params.DRAFT_JOB_NAME,
+            new ByteArrayInputStream(xml.getBytes("UTF-8"))
+          )
+
+          echo "✅ Draft created: ${draft.fullName}"
+          echo "Now go to the draft job UI and modify configuration."
+        }
+      }
     }
-    parent = (ItemGroup) next
-  }
-  return parent
-}
-
-def deleteIfExists(ItemGroup parent, String name) {
-  def existing = parent.getItem(name)
-  if (existing != null) {
-    assert OVERWRITE_DRAFT_IF_EXISTS : "Draft job already exists: ${existing.fullName}. Set OVERWRITE_DRAFT_IF_EXISTS=true to overwrite."
-    println "Deleting existing draft: ${existing.fullName}"
-    existing.delete()
   }
 }
-
-// ========= Main =========
-def original = mustGetJob(ORIGINAL_FULLNAME)
-def xml = original.getConfigFile().asString()
-
-def draftParent = getOrCreateFolder(DRAFT_FOLDER_FULLNAME)
-deleteIfExists(draftParent, DRAFT_JOB_NAME)
-
-def draft = draftParent.createProjectFromXML(
-  DRAFT_JOB_NAME,
-  new ByteArrayInputStream(xml.getBytes("UTF-8"))
-)
-
-println "✅ Draft job created: ${draft.fullName}"
-println "Now go modify the draft job configuration in UI."
