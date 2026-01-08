@@ -1,5 +1,31 @@
+import groovy.transform.NonCPS
 import jenkins.model.*
 import hudson.model.TopLevelItem
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.nio.charset.StandardCharsets
+
+@NonCPS
+String readJobConfigXml(String fullName) {
+  def j = Jenkins.get()
+  def item = j.getItemByFullName(fullName)
+  if (!(item instanceof TopLevelItem)) {
+    throw new IllegalArgumentException("Job not found or not TopLevelItem: " + fullName)
+  }
+  return ((TopLevelItem)item).getConfigFile().asString()
+}
+
+@NonCPS
+void overwriteJobConfigXml(String targetFullName, String newXml) {
+  def j = Jenkins.get()
+  def item = j.getItemByFullName(targetFullName)
+  if (!(item instanceof TopLevelItem)) {
+    throw new IllegalArgumentException("Job not found or not TopLevelItem: " + targetFullName)
+  }
+  def job = (TopLevelItem) item
+  job.updateByXml(new javax.xml.transform.stream.StreamSource(new StringReader(newXml)))
+  job.save()
+}
 
 pipeline {
   agent any
@@ -11,79 +37,29 @@ pipeline {
   }
 
   stages {
-    stage('Backup original + export draft XML') {
+    stage('Backup + Override') {
       steps {
         script {
-          // Lấy XML trong 1 scope ngắn, không giữ job object lâu
-          def j = Jenkins.get()
+          // 1) Read XMLs via @NonCPS => Pipeline chỉ giữ String (serializable)
+          String oldXml = readJobConfigXml(params.ORIGINAL_FULLNAME)
+          String newXml = readJobConfigXml(params.DRAFT_FULLNAME)
 
-          def originalItem = j.getItemByFullName(params.ORIGINAL_FULLNAME)
-          def draftItem    = j.getItemByFullName(params.DRAFT_FULLNAME)
-
-          if (!(originalItem instanceof TopLevelItem)) {
-            error("Original job not found or not TopLevelItem: ${params.ORIGINAL_FULLNAME}")
-          }
-          if (!(draftItem instanceof TopLevelItem)) {
-            error("Draft job not found or not TopLevelItem: ${params.DRAFT_FULLNAME}")
-          }
-
-          def original = (TopLevelItem) originalItem
-          def draft    = (TopLevelItem) draftItem
-
-          def oldXml = original.getConfigFile().asString()
-          def newXml = draft.getConfigFile().asString()
-
+          // 2) Backup file in workspace (an toàn permission)
           def ts = new Date().format("yyyyMMdd_HHmmss")
-          def safe = { String s -> s.replaceAll(/[^A-Za-z0-9_.-]/, "_") }
-
-          def backupFile = "backup_${safe(original.fullName)}_${ts}.config.xml"
-          def draftFile  = "draft_${safe(draft.fullName)}_${ts}.config.xml"
+          def safeName = params.ORIGINAL_FULLNAME.replaceAll(/[^A-Za-z0-9_.-]/, "_")
+          def backupFile = "backup_${safeName}_${ts}.config.xml"
 
           writeFile file: backupFile, text: oldXml, encoding: 'UTF-8'
-          writeFile file: draftFile,  text: newXml, encoding: 'UTF-8'
+          archiveArtifacts artifacts: backupFile, fingerprint: true
 
-          echo "✅ Backup saved: ${backupFile}"
-          echo "✅ Draft XML saved: ${draftFile}"
+          echo "✅ Backed up original config.xml to ${backupFile}"
           echo "Old XML size: ${oldXml.length()} | New XML size: ${newXml.length()}"
+          echo "DRY_RUN=${params.DRY_RUN}"
 
-          archiveArtifacts artifacts: "${backupFile},${draftFile}", fingerprint: true
-
-          // Đưa file draft xml sang stage sau bằng stash (an toàn hơn env/base64)
-          stash name: 'draftXml', includes: draftFile
-          // Lưu tên file draft vào env nhỏ gọn (chỉ tên file, không phải nội dung)
-          env.DRAFT_XML_FILE = draftFile
-        }
-      }
-    }
-
-    stage('Override original from draft XML') {
-      steps {
-        script {
-          if (params.DRY_RUN) {
-            echo "DRY_RUN=true → không apply."
-            return
+          // 3) Apply overwrite (still via @NonCPS)
+          if (!params.DRY_RUN) {
+            overwriteJobConfigXml(params.ORIGINAL_FULLNAME, newXml)
+            echo "✅ Overrode original job config.xml from draft."
+          } else {
+            echo "DRY_RUN=true → not applying overwrite."
           }
-
-          // Lấy lại file draft xml từ stash
-          deleteDir() // làm sạch workspace để chắc chắn dùng file từ stash
-          unstash 'draftXml'
-
-          def newXml = readFile(file: env.DRAFT_XML_FILE, encoding: 'UTF-8')
-
-          // Apply ngay trong scope này, không giữ object qua nơi khác
-          def j = Jenkins.get()
-          def originalItem = j.getItemByFullName(params.ORIGINAL_FULLNAME)
-          if (!(originalItem instanceof TopLevelItem)) {
-            error("Original job not found or not TopLevelItem: ${params.ORIGINAL_FULLNAME}")
-          }
-          def original = (TopLevelItem) originalItem
-
-          original.updateByXml(new javax.xml.transform.stream.StreamSource(new StringReader(newXml)))
-          original.save()
-
-          echo "✅ Overrode original job config.xml from draft."
-        }
-      }
-    }
-  }
-}
