@@ -1,75 +1,78 @@
-@Library('your-trusted-shared-lib') _   // <-- nếu bạn có trusted shared library thì dùng; nếu không, xoá dòng này
 import jenkins.model.*
-import com.cloudbees.hudson.plugins.folder.Folder
 import hudson.model.TopLevelItem
-import hudson.model.ItemGroup
+import java.nio.charset.StandardCharsets
 
 pipeline {
   agent any
 
   parameters {
     string(name: 'ORIGINAL_FULLNAME', defaultValue: 'IDB_entitlement-service/entitlement-service_aldon', description: 'Full name of original job')
-    string(name: 'DRAFT_FOLDER', defaultValue: 'DRAFTS/IDB_entitlement-service', description: 'Draft folder path (will be created if missing)')
-    string(name: 'DRAFT_JOB_NAME', defaultValue: 'entitlement-service_aldon_draft', description: 'Draft job name')
-    booleanParam(name: 'OVERWRITE_DRAFT', defaultValue: false, description: 'Delete draft if exists')
+    string(name: 'DRAFT_FULLNAME', defaultValue: 'DRAFTS/IDB_entitlement-service/entitlement-service_aldon_draft', description: 'Full name of draft job')
+    booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'If true, do not apply changes')
   }
 
   stages {
-    stage('Create draft job') {
+    stage('Read configs') {
       steps {
         script {
-          // ---- helpers ----
           def j = Jenkins.get()
 
           def mustGetJob = { String fullName ->
-            def it = j.getItemByFullName(fullName)
-            assert it != null : "Original job not found: ${fullName}"
-            assert it instanceof TopLevelItem : "Original is not a TopLevelItem: ${fullName} (${it.getClass()})"
-            return (TopLevelItem) it
+            def item = j.getItemByFullName(fullName)
+            assert item != null : "Job not found: ${fullName}"
+            assert item instanceof TopLevelItem : "Item is not a TopLevelItem: ${fullName} (${item.getClass()})"
+            return (TopLevelItem) item
           }
 
-          def getOrCreateFolder = { String folderFullName ->
-            ItemGroup parent = j
-            if (!folderFullName?.trim()) return parent
-
-            folderFullName.split('/').findAll { it?.trim() }.each { name ->
-              def next = parent.getItem(name)
-              if (next == null) {
-                echo "Creating folder: ${name}"
-                next = parent.createProject(Folder.class, name)
-              } else {
-                assert next instanceof Folder : "Item '${name}' exists but is not a Folder: ${next.getClass()}"
-              }
-              parent = (ItemGroup) next
-            }
-            return parent
-          }
-
-          def deleteIfExists = { ItemGroup parent, String name ->
-            def existing = parent.getItem(name)
-            if (existing != null) {
-              if (!params.OVERWRITE_DRAFT) {
-                error("Draft job already exists: ${existing.fullName}. Set OVERWRITE_DRAFT=true to overwrite.")
-              }
-              echo "Deleting existing draft: ${existing.fullName}"
-              existing.delete()
-            }
-          }
-
-          // ---- main ----
           def original = mustGetJob(params.ORIGINAL_FULLNAME)
-          def xml = original.getConfigFile().asString()
+          def draft    = mustGetJob(params.DRAFT_FULLNAME)
 
-          def draftParent = getOrCreateFolder(params.DRAFT_FOLDER)
-          deleteIfExists(draftParent, params.DRAFT_JOB_NAME)
+          // read xml
+          def oldXml = original.getConfigFile().asString()
+          def newXml = draft.getConfigFile().asString()
 
-          def draft = draftParent.createProjectFromXML(
-            params.DRAFT_JOB_NAME,
-            new ByteArrayInputStream(xml.getBytes("UTF-8"))
-          )
+          // backup into workspace
+          def ts = new Date().format("yyyyMMdd_HHmmss")
+          def safeName = { String s -> s.replaceAll(/[^A-Za-z0-9_.-]/, "_") }
 
-          echo "✅ Draft created: ${draft.fullName}"
-          echo "Now go to the draft job UI and modify configuration."
+          def backupFile = "backup_${safeName(original.fullName)}_${ts}.config.xml"
+          writeFile file: backupFile, text: oldXml, encoding: 'UTF-8'
+
+          echo "✅ Backed up original config.xml to workspace: ${backupFile}"
+          echo "Original XML size: ${oldXml.length()} | Draft XML size: ${newXml.length()}"
+          echo "DRY_RUN=${params.DRY_RUN}"
+
+          // archive backup so you can retrieve it later
+          archiveArtifacts artifacts: backupFile, fingerprint: true
+
+          // store for next stage
+          currentBuild.description = "Backup: ${backupFile}"
+          // stash xml in variables for next stage (simple approach: use env with base64)
+          env._NEW_XML_B64 = newXml.bytes.encodeBase64().toString()
+        }
+      }
+    }
+
+    stage('Override original from draft') {
+      steps {
+        script {
+          if (params.DRY_RUN) {
+            echo "DRY_RUN=true → not applying update."
+            return
+          }
+
+          def j = Jenkins.get()
+          def originalItem = j.getItemByFullName(params.ORIGINAL_FULLNAME)
+          assert originalItem != null && originalItem instanceof TopLevelItem : "Original job not found: ${params.ORIGINAL_FULLNAME}"
+          def original = (TopLevelItem) originalItem
+
+          def newXml = new String(env._NEW_XML_B64.decodeBase64(), StandardCharsets.UTF_8)
+
+          // overwrite original config (preserves history)
+          original.updateByXml(new javax.xml.transform.stream.StreamSource(new StringReader(newXml)))
+          original.save()
+
+          echo "✅ Overrode original job configuration from draft config.xml"
         }
       }
     }
