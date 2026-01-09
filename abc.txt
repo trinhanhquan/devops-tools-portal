@@ -1,30 +1,51 @@
 import groovy.transform.NonCPS
 import jenkins.model.*
+import com.cloudbees.hudson.plugins.folder.Folder
 import hudson.model.TopLevelItem
-import java.nio.file.Files
-import java.nio.file.Paths
-import java.nio.charset.StandardCharsets
+import hudson.model.ItemGroup
 
 @NonCPS
-String readJobConfigXml(String fullName) {
+String createDraftJob(String originalFullName, String draftFolder, String draftJobName, boolean overwrite) {
   def j = Jenkins.get()
-  def item = j.getItemByFullName(fullName)
-  if (!(item instanceof TopLevelItem)) {
-    throw new IllegalArgumentException("Job not found or not TopLevelItem: " + fullName)
-  }
-  return ((TopLevelItem)item).getConfigFile().asString()
-}
 
-@NonCPS
-void overwriteJobConfigXml(String targetFullName, String newXml) {
-  def j = Jenkins.get()
-  def item = j.getItemByFullName(targetFullName)
-  if (!(item instanceof TopLevelItem)) {
-    throw new IllegalArgumentException("Job not found or not TopLevelItem: " + targetFullName)
+  def original = j.getItemByFullName(originalFullName)
+  if (!(original instanceof TopLevelItem)) {
+    throw new IllegalArgumentException("Original job not found or not TopLevelItem: " + originalFullName)
   }
-  def job = (TopLevelItem) item
-  job.updateByXml(new javax.xml.transform.stream.StreamSource(new StringReader(newXml)))
-  job.save()
+
+  // read xml
+  def xml = ((TopLevelItem)original).getConfigFile().asString()
+
+  // create folders
+  ItemGroup parent = j
+  if (draftFolder?.trim()) {
+    draftFolder.split('/').findAll { it?.trim() }.each { folderName ->
+      def next = parent.getItem(folderName)
+      if (next == null) {
+        next = parent.createProject(Folder.class, folderName)
+      } else if (!(next instanceof Folder)) {
+        throw new IllegalStateException("Item exists but not a folder: " + folderName + " -> " + next.getClass())
+      }
+      parent = (ItemGroup) next
+    }
+  }
+
+  // delete draft if exists
+  def existing = parent.getItem(draftJobName)
+  if (existing != null) {
+    if (!overwrite) {
+      throw new IllegalStateException("Draft job already exists: " + existing.fullName)
+    }
+    existing.delete()
+  }
+
+  // create new from xml
+  def draft = parent.createProjectFromXML(
+    draftJobName,
+    new ByteArrayInputStream(xml.getBytes("UTF-8"))
+  )
+
+  return draft.fullName
 }
 
 pipeline {
@@ -32,38 +53,36 @@ pipeline {
 
   parameters {
     string(name: 'ORIGINAL_FULLNAME', defaultValue: 'IDB_entitlement-service/entitlement-service_aldon', description: 'Full name of original job')
-    string(name: 'DRAFT_FULLNAME', defaultValue: 'DRAFTS/IDB_entitlement-service/entitlement-service_aldon_draft', description: 'Full name of draft job')
-    booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'If true, do not apply changes')
+    string(name: 'DRAFT_FOLDER', defaultValue: 'DRAFTS/IDB_entitlement-service', description: 'Draft folder path')
+    string(name: 'DRAFT_JOB_NAME', defaultValue: 'entitlement-service_aldon_draft', description: 'Draft job name')
+    booleanParam(name: 'OVERWRITE_DRAFT', defaultValue: false, description: 'Delete draft if exists')
+    string(name: 'JIRA_ISSUE', defaultValue: 'ABC-123', description: 'Jira issue key to comment (optional)')
   }
 
   stages {
-    stage('Backup + Override') {
+    stage('Create draft job') {
       steps {
         script {
-          // 1) Read XMLs via @NonCPS => Pipeline chỉ giữ String (serializable)
-          String oldXml = readJobConfigXml(params.ORIGINAL_FULLNAME)
-          String newXml = readJobConfigXml(params.DRAFT_FULLNAME)
+          // chỉ nhận về String => serializable
+          def draftFullName = createDraftJob(
+            params.ORIGINAL_FULLNAME,
+            params.DRAFT_FOLDER,
+            params.DRAFT_JOB_NAME,
+            params.OVERWRITE_DRAFT
+          )
 
-          // 2) Backup file in workspace (an toàn permission)
-          def ts = new Date().format("yyyyMMdd_HHmmss")
-          def safeName = params.ORIGINAL_FULLNAME.replaceAll(/[^A-Za-z0-9_.-]/, "_")
-          def backupFile = "backup_${safeName}_${ts}.config.xml"
-
-          writeFile file: backupFile, text: oldXml, encoding: 'UTF-8'
-          archiveArtifacts artifacts: backupFile, fingerprint: true
-
-          echo "✅ Backed up original config.xml to ${backupFile}"
-          echo "Old XML size: ${oldXml.length()} | New XML size: ${newXml.length()}"
-          echo "DRY_RUN=${params.DRY_RUN}"
-
-          // 3) Apply overwrite (still via @NonCPS)
-          if (!params.DRY_RUN) {
-            overwriteJobConfigXml(params.ORIGINAL_FULLNAME, newXml)
-            echo "✅ Overrode original job config.xml from draft."
-          } else {
-            echo "DRY_RUN=true → not applying overwrite."
-          }
+          echo "✅ Draft created: ${draftFullName}"
+          env.DRAFT_FULLNAME = draftFullName
         }
+      }
+    }
+
+    stage('Jira comment (safe)') {
+      when { expression { return params.JIRA_ISSUE?.trim() } }
+      steps {
+        // Gọi step ở đây, lúc này scope không giữ Jenkins/Job objects nữa
+        jiraAddComment idOrKey: params.JIRA_ISSUE,
+                       comment: "Draft job created: ${env.DRAFT_FULLNAME}. Please review/modify then run Step 2 to promote."
       }
     }
   }
