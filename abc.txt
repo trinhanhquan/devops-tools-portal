@@ -1,89 +1,123 @@
-import groovy.transform.NonCPS
-import jenkins.model.*
-import com.cloudbees.hudson.plugins.folder.Folder
-import hudson.model.TopLevelItem
-import hudson.model.ItemGroup
+import jenkins.model.Jenkins
 
-@NonCPS
-String createDraftJob(String originalFullName, String draftFolder, String draftJobName, boolean overwrite) {
-  def j = Jenkins.get()
+import com.cloudbees.plugins.credentials.Credentials
+import com.cloudbees.plugins.credentials.CredentialsProvider
+import com.cloudbees.plugins.credentials.CredentialsStore
+import com.cloudbees.plugins.credentials.domains.Domain
 
-  def original = j.getItemByFullName(originalFullName)
-  if (!(original instanceof TopLevelItem)) {
-    throw new IllegalArgumentException("Original job not found or not TopLevelItem: " + originalFullName)
-  }
+import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl
+import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
 
-  // read xml
-  def xml = ((TopLevelItem)original).getConfigFile().asString()
+import hudson.util.Secret
 
-  // create folders
-  ItemGroup parent = j
-  if (draftFolder?.trim()) {
-    draftFolder.split('/').findAll { it?.trim() }.each { folderName ->
-      def next = parent.getItem(folderName)
-      if (next == null) {
-        next = parent.createProject(Folder.class, folderName)
-      } else if (!(next instanceof Folder)) {
-        throw new IllegalStateException("Item exists but not a folder: " + folderName + " -> " + next.getClass())
-      }
-      parent = (ItemGroup) next
-    }
-  }
+// =====================
+// USER INPUT (edit here)
+// =====================
+String CRED_ID = "my-cred-id"
 
-  // delete draft if exists
-  def existing = parent.getItem(draftJobName)
-  if (existing != null) {
-    if (!overwrite) {
-      throw new IllegalStateException("Draft job already exists: " + existing.fullName)
-    }
-    existing.delete()
-  }
+// Only set fields you want to change; keep null to preserve existing.
+Map updates = [
+  description: "Updated by Groovy script",
 
-  // create new from xml
-  def draft = parent.createProjectFromXML(
-    draftJobName,
-    new ByteArrayInputStream(xml.getBytes("UTF-8"))
-  )
+  // Username/Password updates
+  username   : null,          // e.g. "new-user"
+  password   : null,          // e.g. "new-pass"
 
-  return draft.fullName
+  // Secret Text updates
+  secretText : null           // e.g. "new-secret-text"
+]
+
+// Set true to preview without applying
+boolean DRY_RUN = false
+// =====================
+
+class FoundCred {
+  CredentialsStore store
+  Domain domain
+  Credentials cred
 }
 
-pipeline {
-  agent any
+def keepOr(currentVal, newVal) { newVal == null ? currentVal : newVal }
 
-  parameters {
-    string(name: 'ORIGINAL_FULLNAME', defaultValue: 'IDB_entitlement-service/entitlement-service_aldon', description: 'Full name of original job')
-    string(name: 'DRAFT_FOLDER', defaultValue: 'DRAFTS/IDB_entitlement-service', description: 'Draft folder path')
-    string(name: 'DRAFT_JOB_NAME', defaultValue: 'entitlement-service_aldon_draft', description: 'Draft job name')
-    booleanParam(name: 'OVERWRITE_DRAFT', defaultValue: false, description: 'Delete draft if exists')
-    string(name: 'JIRA_ISSUE', defaultValue: 'ABC-123', description: 'Jira issue key to comment (optional)')
-  }
-
-  stages {
-    stage('Create draft job') {
-      steps {
-        script {
-          // chỉ nhận về String => serializable
-          def draftFullName = createDraftJob(
-            params.ORIGINAL_FULLNAME,
-            params.DRAFT_FOLDER,
-            params.DRAFT_JOB_NAME,
-            params.OVERWRITE_DRAFT
-          )
-
-          echo "✅ Draft created: ${draftFullName}"
-          env.DRAFT_FULLNAME = draftFullName
+FoundCred findById(String id) {
+  def stores = CredentialsProvider.lookupStores(Jenkins.get())
+  for (CredentialsStore store : stores) {
+    for (Domain domain : store.getDomains()) {
+      for (Credentials c : store.getCredentials(domain)) {
+        if (c.hasProperty("id") && c.id == id) {
+          return new FoundCred(store: store, domain: domain, cred: c)
         }
       }
     }
-
-    stage('Jira comment (safe)') {
-      when { expression { return params.JIRA_ISSUE?.trim() } }
-      steps {
-        // Gọi step ở đây, lúc này scope không giữ Jenkins/Job objects nữa
-        jiraAddComment idOrKey: params.JIRA_ISSUE,
-                       comment: "Draft job created: ${env.DRAFT_FULLNAME}. Please review/modify then run Step 2 to promote."
-      }
-    }
   }
+  return null
 }
+
+def found = findById(CRED_ID)
+assert found != null : "Credential not found for id='${CRED_ID}'."
+
+def oldC = found.cred
+println "Found:"
+println "  id          : ${oldC.id}"
+println "  type        : ${oldC.getClass().name}"
+println "  store       : ${found.store.getClass().name}"
+println "  domain      : ${found.domain?.name ?: '(global)'}"
+println "  description : ${oldC.hasProperty('description') ? oldC.description : '(n/a)'}"
+
+Credentials newC = null
+
+if (oldC instanceof UsernamePasswordCredentialsImpl) {
+  def c = (UsernamePasswordCredentialsImpl) oldC
+
+  String newDesc = keepOr(c.description, updates.description)
+  String newUser = keepOr(c.username, updates.username)
+  String newPass = keepOr(c.password?.plainText, updates.password)
+
+  newC = new UsernamePasswordCredentialsImpl(
+    c.scope,
+    c.id,
+    newDesc,
+    newUser,
+    newPass
+  )
+
+  println "\nDetected: Username/Password"
+  println "  username    : ${c.username} -> ${newUser}"
+  println "  password    : ${updates.password == null ? '(unchanged)' : '(will update)'}"
+  println "  description : ${c.description} -> ${newDesc}"
+
+} else if (oldC instanceof StringCredentialsImpl) {
+  def c = (StringCredentialsImpl) oldC
+
+  String newDesc = keepOr(c.description, updates.description)
+  String newSecret = keepOr(c.secret?.plainText, updates.secretText)
+
+  newC = new StringCredentialsImpl(
+    c.scope,
+    c.id,
+    newDesc,
+    Secret.fromString(newSecret)
+  )
+
+  println "\nDetected: Secret Text"
+  println "  secretText  : ${updates.secretText == null ? '(unchanged)' : '(will update)'}"
+  println "  description : ${c.description} -> ${newDesc}"
+
+} else {
+  throw new IllegalArgumentException(
+    "Unsupported credential type: ${oldC.getClass().name}. " +
+    "This script only supports UsernamePasswordCredentialsImpl and StringCredentialsImpl."
+  )
+}
+
+assert newC != null : "Failed to construct updated credential."
+
+if (DRY_RUN) {
+  println "\nDRY_RUN=true -> no changes applied."
+  return
+}
+
+boolean ok = found.store.updateCredentials(found.domain, oldC, newC)
+assert ok : "updateCredentials returned false (permission issue or store rejected update)."
+
+println "\n✅ Updated credential '${CRED_ID}' successfully."
