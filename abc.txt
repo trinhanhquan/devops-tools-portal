@@ -1,123 +1,27 @@
-import jenkins.model.Jenkins
 
-import com.cloudbees.plugins.credentials.Credentials
-import com.cloudbees.plugins.credentials.CredentialsProvider
-import com.cloudbees.plugins.credentials.CredentialsStore
-import com.cloudbees.plugins.credentials.domains.Domain
+Why Jenkins Jira Plugin breaks specifically
 
-import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl
-import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
+The Jenkins step:
 
-import hudson.util.Secret
+jiraDownloadAttachment(...)
 
-// =====================
-// USER INPUT (edit here)
-// =====================
-String CRED_ID = "my-cred-id"
 
-// Only set fields you want to change; keep null to preserve existing.
-Map updates = [
-  description: "Updated by Groovy script",
+internally calls:
 
-  // Username/Password updates
-  username   : null,          // e.g. "new-user"
-  password   : null,          // e.g. "new-pass"
+/secure/attachment/{id}/{filename}
 
-  // Secret Text updates
-  secretText : null           // e.g. "new-secret-text"
-]
 
-// Set true to preview without applying
-boolean DRY_RUN = false
-// =====================
+Instead of:
 
-class FoundCred {
-  CredentialsStore store
-  Domain domain
-  Credentials cred
-}
+/rest/api/2/attachment/{id}
 
-def keepOr(currentVal, newVal) { newVal == null ? currentVal : newVal }
 
-FoundCred findById(String id) {
-  def stores = CredentialsProvider.lookupStores(Jenkins.get())
-  for (CredentialsStore store : stores) {
-    for (Domain domain : store.getDomains()) {
-      for (Credentials c : store.getCredentials(domain)) {
-        if (c.hasProperty("id") && c.id == id) {
-          return new FoundCred(store: store, domain: domain, cred: c)
-        }
-      }
-    }
-  }
-  return null
-}
+That’s why:
 
-def found = findById(CRED_ID)
-assert found != null : "Credential not found for id='${CRED_ID}'."
+jiraSearchIssues ✅ works
 
-def oldC = found.cred
-println "Found:"
-println "  id          : ${oldC.id}"
-println "  type        : ${oldC.getClass().name}"
-println "  store       : ${found.store.getClass().name}"
-println "  domain      : ${found.domain?.name ?: '(global)'}"
-println "  description : ${oldC.hasProperty('description') ? oldC.description : '(n/a)'}"
+jiraAddComment ✅ works
 
-Credentials newC = null
+jiraDownloadAttachment ❌ fails with API token
 
-if (oldC instanceof UsernamePasswordCredentialsImpl) {
-  def c = (UsernamePasswordCredentialsImpl) oldC
-
-  String newDesc = keepOr(c.description, updates.description)
-  String newUser = keepOr(c.username, updates.username)
-  String newPass = keepOr(c.password?.plainText, updates.password)
-
-  newC = new UsernamePasswordCredentialsImpl(
-    c.scope,
-    c.id,
-    newDesc,
-    newUser,
-    newPass
-  )
-
-  println "\nDetected: Username/Password"
-  println "  username    : ${c.username} -> ${newUser}"
-  println "  password    : ${updates.password == null ? '(unchanged)' : '(will update)'}"
-  println "  description : ${c.description} -> ${newDesc}"
-
-} else if (oldC instanceof StringCredentialsImpl) {
-  def c = (StringCredentialsImpl) oldC
-
-  String newDesc = keepOr(c.description, updates.description)
-  String newSecret = keepOr(c.secret?.plainText, updates.secretText)
-
-  newC = new StringCredentialsImpl(
-    c.scope,
-    c.id,
-    newDesc,
-    Secret.fromString(newSecret)
-  )
-
-  println "\nDetected: Secret Text"
-  println "  secretText  : ${updates.secretText == null ? '(unchanged)' : '(will update)'}"
-  println "  description : ${c.description} -> ${newDesc}"
-
-} else {
-  throw new IllegalArgumentException(
-    "Unsupported credential type: ${oldC.getClass().name}. " +
-    "This script only supports UsernamePasswordCredentialsImpl and StringCredentialsImpl."
-  )
-}
-
-assert newC != null : "Failed to construct updated credential."
-
-if (DRY_RUN) {
-  println "\nDRY_RUN=true -> no changes applied."
-  return
-}
-
-boolean ok = found.store.updateCredentials(found.domain, oldC, newC)
-assert ok : "updateCredentials returned false (permission issue or store rejected update)."
-
-println "\n✅ Updated credential '${CRED_ID}' successfully."
+Because only the last one uses the UI endpoint, not REST.
