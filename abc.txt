@@ -1,27 +1,15 @@
-
-Why Jenkins Jira Plugin breaks specifically
-
-The Jenkins step:
-
-jiraDownloadAttachment(...)
-
-
-internally calls:
-
-/secure/attachment/{id}/{filename}
-
-
-Instead of:
-
-/rest/api/2/attachment/{id}
-
-
-That’s why:
-
-jiraSearchIssues ✅ works
-
-jiraAddComment ✅ works
-
-jiraDownloadAttachment ❌ fails with API token
-
-Because only the last one uses the UI endpoint, not REST.
+| Thành phần              | Có trong XML |
+| ----------------------- | ------------ |
+| Issues                  | ❌            |
+| Attachments             | ❌            |
+| Comments                | ❌            |
+| Worklog                 | ❌            |
+| Agile board             | ❌            |
+| Filter                  | ❌            |
+| Dashboard               | ❌            |
+| Users                   | ❌            |
+| Groups                  | ❌            |
+| ScriptRunner Behaviours | ❌            |
+| Automation rules        | ❌            |
+| Script files            | ❌            |
+| Assets / Insight data   | ❌            |
